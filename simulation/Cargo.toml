@@ -1,0 +1,44 @@
+[package]
+name = "noelleneumann-spiral-simulation"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "noelleneumann_spiral_simulation"
+path = "src/lib.rs"
+
+[[bin]]
+name = "noelleneumann"
+path = "src/main.rs"
+
+[features]
+# `llm` enables the Phase-3 LLM-introspection voice-decision ablation. The
+# default build pulls in NO LLM dependency at all (socsim-llm is optional and
+# only compiled when this feature is on), so the rule-mode binary builds and
+# runs without socsim-llm / a network endpoint.
+default = []
+llm = ["dep:socsim-llm"]
+
+[dependencies]
+rand        = { version = "0.8", features = ["small_rng"] }
+csv         = "1.3"
+serde       = { version = "1.0", features = ["derive"] }
+serde_json  = "1.0"
+clap        = { version = "4.5", features = ["derive"] }
+chrono      = "0.4"
+
+# social-simulation framework (socsim) — the ABM engine substrate.
+# This model is a network + two-layer opinion-dynamics model: core + engine +
+# net + mechanisms (ThresholdContagion reuse) + metrics (core+network) +
+# results. The exact commit is pinned in Cargo.lock.
+socsim-core       = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-core" }
+socsim-engine     = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-engine" }
+socsim-net        = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-net" }
+socsim-mechanisms = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-mechanisms" }
+socsim-metrics    = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-metrics", features = ["core", "network"] }
+socsim-results    = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-results" }
+
+# Optional LLM ablation layer (Phase 3). Only compiled with `--features llm`.
+# The "live" feature enables the Ollama-first → OpenAI-fallback + prompt-cache
+# shared harness; tests use the in-tree mock::ScriptedClient (no live calls).
+socsim-llm = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-llm", features = ["live"], optional = true }

@@ -1,0 +1,13 @@
+[project]
+name = "noelleneumann1974-workspace"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "noelleneumann-tools",
+]
+
+[tool.uv.workspace]
+members = ["tools"]
+
+[tool.uv.sources]
+noelleneumann-tools = { workspace = true }

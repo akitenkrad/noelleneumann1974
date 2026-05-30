@@ -1,0 +1,68 @@
+<!-- noelleneumann1974 hero. Vault SVG style contract (palette + dark mode). -->
+<svg width="100%" viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>Noelle-Neumann 1974 — The Spiral of Silence: A Theory of Public Opinion</title>
+<desc>On a network, agents observe only their neighbours' public expression. As one opinion camp grows louder (more pro voices) the other perceives itself as a shrinking minority and falls silent, producing a self-reinforcing spiral and a gap between perceived and actual support.</desc>
+<style>
+  .t  { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 14px; fill: #2C2C2A; }
+  .ts { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 13px; fill: #444441; }
+  .tl { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 12px; font-weight: 600; fill: #534AB7; letter-spacing: 2px; }
+  .title { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 28px; font-weight: 600; fill: #2C2C2A; }
+  .glab { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 11px; font-weight: 500; fill: #888780; letter-spacing: 0.5px; }
+  .spiral { stroke: #534AB7; stroke-width: 2.2; fill: none; opacity: 0.85; }
+  .voice { fill: #534AB7; }
+  .silent { fill: #C7C5BD; }
+  .con { fill: #0F6E56; }
+  .edge { stroke: #C7C5BD; stroke-width: 1; opacity: 0.55; }
+  @media (prefers-color-scheme: dark) {
+    .t  { fill: #E5E5E2; }
+    .ts { fill: #C7C5BD; }
+    .tl { fill: #AFA9EC; }
+    .title { fill: #E5E5E2; }
+    .glab { fill: #8C8B85; }
+    .spiral { stroke: #AFA9EC; }
+    .voice { fill: #AFA9EC; }
+    .silent { fill: #5F5E5A; }
+    .con { fill: #5DCAA5; }
+    .edge { stroke: #5F5E5A; }
+  }
+</style>
+
+<!-- left: label + title -->
+<text x="40" y="58" class="tl">OPINION DYNAMICS</text>
+<text x="40" y="94" class="title">The Spiral of Silence</text>
+<text x="40" y="128" class="ts">Noelle-Neumann (1974)</text>
+<text x="40" y="160" class="t">P(voice) = logit⁻¹( β_b·b + β_π·[(1−α)π_now + α·π_fut] − β_f·f )</text>
+<text x="40" y="186" class="glab">private opinion b  vs  public expression e ∈ {pro · con · silence}</text>
+<text x="40" y="210" class="glab">majority grows louder · minority falls silent · q̂ ≠ q</text>
+
+<!-- right: spiral of nodes — outer pro voices spiralling inward to a silent minority -->
+<g transform="translate(680, 150)">
+  <!-- spiral path -->
+  <path class="spiral" d="M 0 0
+    C 14 -8, 22 8, 12 22
+    C -4 40, -38 30, -42 2
+    C -47 -38, -6 -64, 38 -52
+    C 86 -40, 100 22, 70 64
+    C 36 110, -42 110, -88 70"/>
+
+  <!-- network edges (subtle) -->
+  <line class="edge" x1="0" y1="0" x2="38" y2="-52"/>
+  <line class="edge" x1="38" y1="-52" x2="70" y2="64"/>
+  <line class="edge" x1="-42" y1="2" x2="-88" y2="70"/>
+  <line class="edge" x1="0" y1="0" x2="-42" y2="2"/>
+
+  <!-- outer ring: loud pro voices (purple, larger) -->
+  <circle class="voice" cx="-88" cy="70" r="9"/>
+  <circle class="voice" cx="70" cy="64" r="9"/>
+  <circle class="voice" cx="38" cy="-52" r="8"/>
+  <circle class="voice" cx="100" cy="6" r="8"/>
+  <circle class="voice" cx="-6" cy="-64" r="7"/>
+  <!-- a couple of con holdouts (teal) -->
+  <circle class="con" cx="-42" cy="2" r="6"/>
+  <circle class="con" cx="12" cy="22" r="5"/>
+  <!-- inner: silenced minority (grey, small) -->
+  <circle class="silent" cx="0" cy="0" r="4"/>
+  <circle class="silent" cx="14" cy="-8" r="3.5"/>
+  <circle class="silent" cx="-10" cy="14" r="3.5"/>
+</g>
+</svg>
