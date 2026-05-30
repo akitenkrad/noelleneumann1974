@@ -3,9 +3,10 @@
 //! 論文の各規則と本研究固有の拡張を，socsim の固定 6-phase
 //! (`PreStep → Environment → Decision → Interaction → Reward → PostStep`) へ配置
 //! する．`prefalse_cascade` は `socsim-mechanisms` の
-//! [`ThresholdContagionMechanism`](socsim_mechanisms::ThresholdContagionMechanism)
-//! を直接流用する (世界状態が `BinaryState + Neighbors` を実装済み) ため，本モジュール
-//! には含めない (`simulation.rs` で配線する)．
+//! [`PerAgentThresholdContagionMechanism`](socsim_mechanisms::PerAgentThresholdContagionMechanism)
+//! を直接流用する (世界状態が `BinaryState + Neighbors + ActivationThreshold` を実装済み，
+//! per-agent 閾値 `θ_i` を世界状態から読む) ため，本モジュールには含めない
+//! (`simulation.rs` で配線する)．
 //!
 //! | Mechanism | Phase |
 //! |-----------|-------|
@@ -15,7 +16,7 @@
 //! | [`FutureAssessmentMechanism`] | Decision |
 //! | [`VoiceDecisionMechanism`] | Decision |
 //! | [`SilenceSpiralMechanism`] | Interaction |
-//! | (`ThresholdContagionMechanism`) | Interaction |
+//! | (`PerAgentThresholdContagionMechanism`) | Interaction |
 //! | (`MetricsMechanism`) | Reward |
 //! | [`ClimateQuasiStatMechanism`] | PostStep |
 

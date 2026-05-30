@@ -32,10 +32,10 @@ noelleneumann1974/
 
 The simulation builds on [socsim](https://github.com/akitenkrad/rs-social-simulation-tools), a Rust ABM toolkit. It is an opinion-dynamics-on-a-network model, so it depends on:
 
-- `socsim-core` — `WorldState` / `Mechanism` / `SimClock` / `SimRng` / `derive_seed` and the capability traits (`Neighbors`, `BinaryState`).
+- `socsim-core` — `WorldState` / `Mechanism` / `SimClock` / `SimRng` / `derive_seed` and the capability traits (`Neighbors`, `BinaryState`, `ActivationThreshold`).
 - `socsim-engine` — `SimulationBuilder`, the six-phase step loop, and `RandomActivationScheduler`.
 - `socsim-net` — `SocialNetwork` (Watts–Strogatz default; Erdős–Rényi and Barabási–Albert selectable).
-- `socsim-mechanisms` — `ThresholdContagionMechanism`, reused directly for the hardcore / preference-falsification cascade.
+- `socsim-mechanisms` — `PerAgentThresholdContagionMechanism`, reused directly for the hardcore / preference-falsification cascade (each agent's own θ_i is read from the world via `ActivationThreshold`).
 - `socsim-metrics` (features `core`, `network`) — canonical `stats` (mean / variance / shannon_entropy / hhi / distinct_clusters) and `network::cascade_size`.
 - `socsim-results` — timestamped run directories, the `latest` symlink, and CSV/JSON writers.
 - `socsim-llm` (features `live`) — only compiled with the optional `llm` Cargo feature, for the introspection ablation.
@@ -56,7 +56,7 @@ The world also carries the per-agent perceived current/future majority of one's 
 | `future_assessment_update` | Decision | Extrapolates the local-support trend over a window `W` into the future climate `π_fut` (H4/H5). |
 | `voice_decision` | Decision | The core choice. A `VoiceOracle` returns a voice probability; the rule oracle uses the §formula logit, the LLM oracle introspects. Synchronous snapshot-then-batch update. |
 | `silence_spiral` | Interaction | The quasi-statistical organ: updates `π_now` from the fraction of *voicing* neighbours on one's own side (a Hegselmann–Krause-style local average adapted to discrete public expression). |
-| `prefalse_cascade` | Interaction | `ThresholdContagionMechanism` (BinaryState + Neighbors), flipping silent agents to voice when their voicing-neighbour ratio crosses a high threshold — the mobilized-minority cascade. |
+| `prefalse_cascade` | Interaction | `PerAgentThresholdContagionMechanism` (BinaryState + Neighbors + ActivationThreshold), flipping each silent agent to voice when its voicing-neighbour ratio reaches its own threshold θ_i — low-θ hardcore mobilize without waiting for a saturated neighbourhood, the mobilized-minority cascade. |
 | `metrics_record` | Reward | Canonical and paper-specific metrics. |
 | `climate_quasi_stat` | PostStep | Aggregates apparent support `q̂`, accumulates the local-support history, and requests stop once `q̂` stabilizes. |
 

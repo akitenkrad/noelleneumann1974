@@ -10,14 +10,15 @@
 //! 生む創発の源である ([kuran:1995] の preference falsification と同型)．
 //!
 //! `prefalse_cascade` (ハードコア / 逆螺旋) のために [`BinaryState`] +
-//! [`Neighbors`] を実装する (`granovetter1973` で確立した
-//! [`ThresholdContagionMechanism`](socsim_mechanisms::ThresholdContagionMechanism)
-//! 流用パターン)．`is_active` = 「現在発言中」を意味する．
+//! [`Neighbors`] + [`ActivationThreshold`] を実装する (`granovetter1973` で確立した
+//! [`PerAgentThresholdContagionMechanism`](socsim_mechanisms::PerAgentThresholdContagionMechanism)
+//! 流用パターン)．`is_active` = 「現在発言中」，`activation_threshold` = 各エージェント
+//! の per-agent 閾値 `θ_i` (= `voice_threshold[i]`，下裾がハードコア) を意味する．
 
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
-use socsim_core::{AgentId, BinaryState, Neighbors, SimClock, WorldState};
+use socsim_core::{ActivationThreshold, AgentId, BinaryState, Neighbors, SimClock, WorldState};
 use socsim_net::SocialNetwork;
 
 /// 公的表出 `e_i`：論争的話題について公に表明するか / 沈黙するか．
@@ -146,15 +147,15 @@ impl Neighbors for SpiralWorld {
 impl BinaryState for SpiralWorld {
     /// active = 「現在発言中」(賛成・反対いずれか)．
     ///
-    /// `prefalse_cascade` の [`ThresholdContagionMechanism`] はこの真偽値で
-    /// 近傍発言比 `ρ^V_i` を測り，沈黙者を発言へ反転させる．
+    /// `prefalse_cascade` の [`PerAgentThresholdContagionMechanism`] はこの真偽値で
+    /// 近傍発言比 `ρ^V_i` を測り，`ρ^V_i ≥ θ_i` の沈黙者を発言へ反転させる．
     fn is_active(&self, id: AgentId) -> bool {
         self.e_pub[id.0 as usize].is_voicing()
     }
 
     /// 沈黙者を発言へ反転させる (反転先は私的意見 `b_i` の符号で決める)．
     ///
-    /// `active=false` への書き戻しは沈黙化を意味するが，ThresholdContagion は
+    /// `active=false` への書き戻しは沈黙化を意味するが，閾値カスケードは
     /// 単調増加 (発言のみ) なので実際には呼ばれない．
     fn set_active(&mut self, id: AgentId, active: bool) {
         let i = id.0 as usize;
@@ -168,6 +169,17 @@ impl BinaryState for SpiralWorld {
         } else {
             self.e_pub[i] = Expression::Silence;
         }
+    }
+}
+
+impl ActivationThreshold for SpiralWorld {
+    /// per-agent 活性化閾値 `θ_i` = `voice_threshold[i]`．
+    ///
+    /// `prefalse_cascade` の [`PerAgentThresholdContagionMechanism`] は，沈黙者 `i` の
+    /// 近傍発言比がこの `θ_i` 以上のとき発言へ反転させる．下裾を `0` 付近に圧縮した
+    /// ハードコア (低 `θ_i`) は飽和近傍を待たずに動員され，少数派でも発言を立て続ける．
+    fn activation_threshold(&self, id: AgentId) -> f64 {
+        self.voice_threshold[id.0 as usize]
     }
 }
 

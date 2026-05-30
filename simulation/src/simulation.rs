@@ -9,7 +9,7 @@ use rand::Rng;
 
 use socsim_core::{derive_seed, AgentId, SimRng};
 use socsim_engine::{RandomActivationScheduler, SimulationBuilder};
-use socsim_mechanisms::ThresholdContagionMechanism;
+use socsim_mechanisms::PerAgentThresholdContagionMechanism;
 use socsim_net::SocialNetwork;
 
 use crate::config::{Config, DecisionMode, NetworkModel};
@@ -27,14 +27,6 @@ const RNG_WORLD_INIT: u64 = 0;
 const RNG_ENGINE: u64 = 1;
 /// media_signal の確率的シグナル生成用 RNG ラベル．
 const RNG_MEDIA: u64 = 2;
-
-/// prefalse_cascade (ThresholdContagion) の代表活性化閾値 θ．
-///
-/// 近傍がほぼ全員発言している (比 > θ) 沈黙者だけを発言へ反転させる ([kuran:1995]
-/// の閾値カスケード)．高めに設定して大域的な発言フラッディングを防ぎ，少数派の
-/// **ハードコア動員** (飽和近傍での発言) に役割を限定する — これがないと沈黙の螺旋
-/// 非対称が cascade で潰れる．per-agent θ_i はハードコア初期化 (下裾圧縮) で表現する．
-const CASCADE_THETA: f64 = 0.95;
 
 /// シミュレーション結果．
 pub struct SimulationResult {
@@ -205,10 +197,12 @@ pub fn run_with_oracle<O: VoiceOracle + 'static>(
         .add_mechanism(Box::new(VoiceDecisionMechanism { oracle }))
         // Interaction
         .add_mechanism(Box::new(SilenceSpiralMechanism { lambda: cfg.lambda }));
-    // prefalse_cascade: ThresholdContagion 直接流用 (BinaryState+Neighbors)．
-    // 閾値は世界状態の per-agent θ_i を使いたいが ThresholdContagion は単一 θ なので，
-    // 代表閾値 CASCADE_THETA を与え，近傍発言比がそれを超えた沈黙者を発言へ反転させる．
-    builder = builder.add_mechanism(Box::new(ThresholdContagionMechanism::new(CASCADE_THETA)));
+    // prefalse_cascade: PerAgentThresholdContagion 直接流用
+    // (BinaryState+Neighbors+ActivationThreshold)．各沈黙者 i を世界状態の per-agent
+    // 閾値 θ_i (= voice_threshold[i]) と比べ，近傍発言比 ρ^V_i ≥ θ_i の沈黙者を発言へ
+    // 反転させる．低 θ_i のハードコア (下裾) は飽和近傍を待たず動員され，高 θ_i の
+    // 一般層は大域フラッディングに巻き込まれない — これで沈黙の螺旋非対称を保つ．
+    builder = builder.add_mechanism(Box::new(PerAgentThresholdContagionMechanism::new()));
     // PostStep
     builder = builder.add_mechanism(Box::new(ClimateQuasiStatMechanism::new(cfg.window, 1e-3)));
 
@@ -296,7 +290,7 @@ pub fn final_world(cfg: &Config) -> SpiralWorld {
         .add_mechanism(Box::new(FutureAssessmentMechanism { gamma: cfg.gamma }))
         .add_mechanism(Box::new(VoiceDecisionMechanism { oracle }))
         .add_mechanism(Box::new(SilenceSpiralMechanism { lambda: cfg.lambda }))
-        .add_mechanism(Box::new(ThresholdContagionMechanism::new(CASCADE_THETA)))
+        .add_mechanism(Box::new(PerAgentThresholdContagionMechanism::new()))
         .add_mechanism(Box::new(ClimateQuasiStatMechanism::new(cfg.window, 1e-3)))
         .build();
     sim.run().expect("シミュレーションの実行に失敗");

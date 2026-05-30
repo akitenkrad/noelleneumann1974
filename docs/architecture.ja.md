@@ -30,10 +30,10 @@ noelleneumann1974/
 
 本体は [socsim](https://github.com/akitenkrad/rs-social-simulation-tools) (Rust ABM ツールキット) 上に構築する．網モデル + 意見動学なので以下に依存する．
 
-- `socsim-core` — `WorldState` / `Mechanism` / `SimClock` / `SimRng` / `derive_seed` と能力トレイト (`Neighbors`, `BinaryState`)．
+- `socsim-core` — `WorldState` / `Mechanism` / `SimClock` / `SimRng` / `derive_seed` と能力トレイト (`Neighbors`, `BinaryState`, `ActivationThreshold`)．
 - `socsim-engine` — `SimulationBuilder`，6 フェーズの step ループ，`RandomActivationScheduler`．
 - `socsim-net` — `SocialNetwork` (Watts--Strogatz 既定．ER / BA も切替可)．
-- `socsim-mechanisms` — `ThresholdContagionMechanism`．ハードコア / 選好偽装カスケードへ直接流用．
+- `socsim-mechanisms` — `PerAgentThresholdContagionMechanism`．ハードコア / 選好偽装カスケードへ直接流用 (各エージェントの per-agent 閾値 θ_i を世界状態の `ActivationThreshold` から読む)．
 - `socsim-metrics` (features `core`, `network`) — 正準 `stats` (mean / variance / shannon_entropy / hhi / distinct_clusters) と `network::cascade_size`．
 - `socsim-results` — タイムスタンプ付き run ディレクトリ，`latest` シンボリックリンク，CSV / JSON writer．
 - `socsim-llm` (features `live`) — 任意の `llm` Cargo feature でのみコンパイルされる内省 ablation 用．
@@ -54,7 +54,7 @@ noelleneumann1974/
 | `future_assessment_update` | Decision | 窓 `W` の局所支持率トレンドを未来気候 `π_fut` へ外挿 (H4/H5)． |
 | `voice_decision` | Decision | 中核の決定．`VoiceOracle` が発言確率を返す．ルール版は §数式のロジット，LLM 版は内省．スナップショット → 一括書戻しの同期更新． |
 | `silence_spiral` | Interaction | 準統計的器官．自陣営として発言している近傍の比から `π_now` を更新 (HK 機構を離散表出観察へ組み替えた版)． |
-| `prefalse_cascade` | Interaction | `ThresholdContagionMechanism` (BinaryState + Neighbors)．近傍発言比が高閾値を超えた沈黙者を発言へ反転 — 少数派動員カスケード． |
+| `prefalse_cascade` | Interaction | `PerAgentThresholdContagionMechanism` (BinaryState + Neighbors + ActivationThreshold)．各沈黙者の近傍発言比がその個体の閾値 θ_i に達したら発言へ反転 — 低 θ_i のハードコアは飽和近傍を待たず動員される少数派動員カスケード． |
 | `metrics_record` | Reward | 正準 + 論文固有指標． |
 | `climate_quasi_stat` | PostStep | 見かけ支持率 `q̂` を集約し，局所支持率履歴を積み，`q̂` 安定で停止要求． |
 
