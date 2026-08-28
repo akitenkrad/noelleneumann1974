@@ -1,5 +1,5 @@
 [package]
-name = "noelleneumann-spiral-simulation"
+name = "noelleneumann-simulation"
 version = "0.1.0"
 edition = "2021"
 

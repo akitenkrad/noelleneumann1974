@@ -6,7 +6,7 @@
 
 ```
 noelleneumann1974/
-├── simulation/                    # Rust crate `noelleneumann-spiral-simulation` (bin `noelleneumann`)
+├── simulation/                    # Rust crate `noelleneumann-simulation` (bin `noelleneumann`)
 │   ├── src/
 │   │   ├── main.rs                # clap CLI: run / sweep / reproduce
 │   │   ├── config.rs              # Config / NetworkModel / DecisionMode / JSON シリアライズ
