@@ -4,6 +4,14 @@
 
 The Rust binary `noelleneumann` has three subcommands: `run`, `sweep`, and `reproduce`. Build with `cargo build --release` and invoke via `cargo run --release -- <subcommand> [flags]`.
 
+One invocation is one [runvault](https://github.com/akitenkrad/rs-runvault) run. The binary does not name its own output directory: `--output-dir` is the *results root* (default `results/`), and runvault creates `results/noelleneumann/<subcommand>_<timestamp>_<config_hash>_<execution_hash>/` under it. Ask runvault for a run rather than guessing the newest directory:
+
+```bash
+runvault path --experiment noelleneumann --latest --subcommand run --standalone
+runvault path --experiment noelleneumann --latest --subcommand sweep
+runvault verify "$(runvault path --experiment noelleneumann --latest --subcommand run --standalone)" --deep
+```
+
 ## `run` — a single condition
 
 ```bash
@@ -32,9 +40,10 @@ cargo run --release -- run \
 | `--llm-temperature` | 0.0 | LLM generation temperature (LLM mode only; `0.0` = pseudo-deterministic) |
 | `--llm-seed` | 0 | LLM generation seed passed to the backend (LLM mode only) |
 | `--cache-path` | `.llm_cache/cache.json` | persistent prompt→response cache file (LLM mode only; ignored in rule mode) |
-| `--seed` | random | RNG root seed |
+| `--seed` | random | RNG root seed (materialized before the run, so a run started without one still records the seed it used) |
+| `--output-dir` | `results` | the runvault results root |
 
-`run` writes `opinions.csv` (long: `t, agent_id, b, e, pi_now, pi_fut`), `metrics.csv`, and `config.json` into a timestamped directory under `results/`, and refreshes `results/latest`. The console prints the steady-state (second-half-average) metrics including the H1 log-OR, the H5 future-assessment gap, and hardcore survival.
+`run` writes the opinion trajectory to `artifacts/opinions.csv` (long: `t, agent_id, b, e, pi_now, pi_fut`) inside the run directory, the per-tick metrics to `metrics.csv` (runvault's long form: `run_uid,step,step_unit,scope,name,value`), the conditions to `config.json`, and one `terminal` line plus its `observation` lines to `events.jsonl`. The console prints the steady-state (second-half-average) metrics including the H1 log-OR, the H5 future-assessment gap, and hardcore survival.
 
 ## `sweep` — parameter scan
 
@@ -47,7 +56,9 @@ cargo run --release -- sweep \
     --runs 30 --n 1000 --t-max 80 --seed 42
 ```
 
-The scan is the Cartesian product of all `*-values` lists, repeated `--runs` times with independent derived seeds. Output: `sweep_summary.csv` (one row per `(eta_m, network_beta, alpha, network_k, true_support, run)` with steady-state metrics) and `sweep_config.json`.
+The scan is the Cartesian product of all `*-values` lists, repeated `--runs` times with independent derived seeds.
+
+A sweep is a **parent run plus one child run per grid point**. The parent (`--subcommand sweep`) holds the grid definition in its `config.json` and no per-condition metrics; it declares no `master_seed`, because it is driven by a list of seeds rather than one. Each child (`--subcommand sweep-point`) holds that one condition, writes one `terminal` line per trial to its `events.jsonl` — the row that `sweep_summary.csv` used to hold — and the run-scope averages over its trials to its `metrics.csv`. The trial values are not metrics: putting them there would make `(run_uid, step, scope, name)` repeat.
 
 ## `reproduce` — Table 1–5 anchors
 
@@ -55,7 +66,19 @@ The scan is the Cartesian product of all `*-values` lists, repeated `--runs` tim
 cargo run --release -- reproduce --n 1000 --t-max 80 --seed 42
 ```
 
-Runs the socialism scenario (`q=0.37`) plus a hardcore-boundary scenario (`hardcore_frac=0.25`), compares the observed metrics against the §5 Allensbach-survey anchors, prints a `PASS` / `OFF` table, and writes `reproduction_report.json`. The Python `noelleneumann-tools reproduce` reads that report (see [Reproduction](reproduction.md)).
+Runs the socialism scenario (`q=0.37`) plus a hardcore-boundary scenario (`hardcore_frac=0.25`) — both inside **one** run, because the comparison between them is defined within a single execution — compares the observed metrics against the §5 Allensbach-survey anchors, and prints a `PASS` / `OFF` table.
+
+The three parts of that table are written to three different files, because they are three different kinds of thing:
+
+| File | Holds |
+|------|-------|
+| `metrics.csv` (run scope) | the observed values, plus `anchors_passed` / `anchors_total` |
+| `events.jsonl` (`x.noelleneumann1974.anchor`) | the band and the PASS / off verdict — **this replication's** qualitative anchors, not the paper's numbers |
+| `reference.csv` | the values **the paper reports** (Table 1 / 2 / 4), each with the source it was read from |
+
+The band (`0.30`–`0.42` and so on) is ours; the paper's figure (`0.36`) is in `reference.csv` with its source. Keeping them apart is the point: merged into one row, they stop being distinguishable. The H1 log-OR > 0.8, the H5 gap > 0.4 and hardcore survival > 0.7 are ours alone and have no reference row.
+
+The Python `noelleneumann-tools reproduce` reads all three (see [Reproduction](reproduction.md)).
 
 ## LLM ablation (optional)
 
@@ -67,7 +90,7 @@ cargo run --release --features llm -- run --decision-mode llm \
     --n 200 --t-max 40 --seed 42 --cache-path .llm_cache/spiral.json
 ```
 
-LLM mode persists the prompt→response cache to `--cache-path` (default `.llm_cache/cache.json`; the parent directory is created automatically). Because generation runs at `temperature=0` with a fixed seed and every prompt→response pair is cached on disk, a **warm rerun with the same arguments replays from the cache**: a cold run populates the file by calling the backend, and an identical warm run answers every prompt from the cache (a 100% cache-hit, near-instant replay) instead of re-calling the model. The run also writes `llm_meta.json` with the real `model` / `endpoint` / `temperature` / `seed` / `calls` / `cache_hits` / `cache_hit_rate`. Delete the cache file to force a cold rerun.
+LLM mode persists the prompt→response cache to `--cache-path` (default `.llm_cache/cache.json`; the parent directory is created automatically). Because generation runs at `temperature=0` with a fixed seed and every prompt→response pair is cached on disk, a **warm rerun with the same arguments replays from the cache**: a cold run populates the file by calling the backend, and an identical warm run answers every prompt from the cache (a 100% cache-hit, near-instant replay) instead of re-calling the model. The backend that actually answered goes into `run.json`'s `llm` block (`provider` / `model_snapshot` / `temperature`) — the client is built before the run starts, because only the side that built it knows those. What is only known afterwards, the call breakdown, goes to `metrics.csv` as the run-scope `llm_calls` / `llm_cache_hits` / `llm_cache_hit_rate`. Delete the cache file to force a cold rerun.
 
 An offline scripted-LLM smoke (no network) is available as an example:
 

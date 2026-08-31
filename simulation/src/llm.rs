@@ -8,19 +8,21 @@
 //! 擬似決定論化する．
 //!
 //! LLM 層は socsim の bit 再現性の外側にある (プロンプト→応答キャッシュで擬似決定
-//! 論)．`run_llm` は `simulation::run_with_oracle` に [`LlmOracle`] を渡して駆動する．
+//! 論)．[`run_llm_with_usage`] が `simulation::run_with_oracle` に [`LlmOracle`] を
+//! 渡して駆動する．
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 // ── socsim-llm 共有ハーネスの re-export シム ──────────────────────────────────
 pub use socsim_llm::build_live_client_from_settings;
+use socsim_llm::LlmClient;
 pub use socsim_llm::{llm_config, wrap_client, LiveClient, LlmSettings, MetadataCollector};
 
 use crate::config::Config;
 use crate::mechanisms::VoiceOracle;
 use crate::prompts;
-use crate::simulation::{run_with_oracle, SimulationResult};
+use crate::simulation::{run_with_oracle, LlmIdentity, LlmUsage, SimulationResult};
 use crate::world::SpiralWorld;
 
 /// LLM 内省でエージェントの発言確率を返すオラクル．
@@ -85,15 +87,16 @@ pub fn settings_from_config(cfg: &Config) -> LlmSettings {
     }
 }
 
-/// LLM 版シミュレーション．`Config` の `cache_path` を含む [`LlmSettings`] から
-/// 本番クライアント (Ollama→OpenAI + 永続キャッシュ) を構築し，cache 統計を
-/// 記録する [`run_llm_with_meta`] 経路へ委譲する．`run_dispatch` から呼ばれる本番経路．
-pub fn run_llm(cfg: &Config) -> SimulationResult {
-    let settings = settings_from_config(cfg);
-    let client = build_live_client_from_settings(&settings)
-        .unwrap_or_else(|e| panic!("LLM クライアント構築に失敗: {e}"));
-    let (result, _meta) = run_llm_with_meta(cfg, client);
-    result
+/// クライアントが名乗ったバックエンドの同一性を取り出す．
+///
+/// `run.json` の `llm` ブロックの材料になる．推測はしない — モデル名も endpoint も
+/// クライアント自身が名乗った値をそのまま読む．
+pub fn identity_of(client: &LiveClient, temperature: f32) -> LlmIdentity {
+    LlmIdentity {
+        model: client.inner().model().to_string(),
+        endpoint: client.inner().endpoint().to_string(),
+        temperature,
+    }
 }
 
 /// 与えられた [`LiveClient`] で LLM 版を駆動する (本番 / mock 共通)．
@@ -102,23 +105,19 @@ pub fn run_llm(cfg: &Config) -> SimulationResult {
 /// [`wrap_client`] でラップした `mock::ScriptedClient` を渡す．`Config` の
 /// 温度・シード設定をオラクルへスレッドする (キャッシュ永続化は client 側が担う)．
 pub fn run_with_client(cfg: &Config, client: LiveClient) -> SimulationResult {
-    let (result, _meta) = run_llm_with_meta(cfg, client);
+    let (result, _usage) = run_llm_with_usage(cfg, client);
     result
 }
 
-/// LLM 版を実行し，cache-hit 統計を含む `llm_meta.json` 用の値も返す．
+/// LLM 版を実行し，`MetadataCollector` が集計した実 cache 統計も返す．
 ///
 /// オラクルには `Config` 由来の [`LlmSettings`] (温度・シード) をスレッドする
 /// (従来は `LlmSettings::default()` が固定で，設定した温度/シードが効かなかった)．
-/// 返す JSON は `MetadataCollector` が集計した実 cache 統計を反映する．
-pub fn run_llm_with_meta(
-    cfg: &Config,
-    client: LiveClient,
-) -> (SimulationResult, serde_json::Value) {
+/// model / endpoint / temperature は実行前に決まるので [`identity_of`] の担当で，
+/// ここが返すのは実行しないと分からない呼び出しの内訳だけである．
+pub fn run_llm_with_usage(cfg: &Config, client: LiveClient) -> (SimulationResult, LlmUsage) {
     let root = cfg.seed.unwrap_or_else(rand::random);
     let settings = settings_from_config(cfg);
-    let model = client.inner().model().to_string();
-    let endpoint = client.inner().endpoint().to_string();
     let shared_client = Rc::new(RefCell::new(client));
     let shared_meta = Rc::new(RefCell::new(MetadataCollector::new()));
     let oracle = LlmOracle::new(
@@ -142,16 +141,11 @@ pub fn run_llm_with_meta(
     }
 
     let meta = shared_meta.borrow();
-    let json = serde_json::json!({
-        "decision_mode": "llm",
-        "model": model,
-        "endpoint": endpoint,
-        "temperature": settings.temperature,
-        "seed": root,
-        "calls": meta.total(),
-        "cache_hits": meta.cache_hits(),
-        "cache_hit_rate": meta.cache_hit_rate(),
-    });
+    let usage = LlmUsage {
+        calls: meta.total(),
+        cache_hits: meta.cache_hits(),
+        cache_hit_rate: meta.cache_hit_rate(),
+    };
     drop(meta);
-    (result, json)
+    (result, usage)
 }

@@ -29,14 +29,18 @@ chrono      = "0.4"
 
 # social-simulation framework (socsim) — the ABM engine substrate.
 # This model is a network + two-layer opinion-dynamics model: core + engine +
-# net + mechanisms (ThresholdContagion reuse) + metrics (core+network) +
-# results. The exact commit is pinned in Cargo.lock.
+# net + mechanisms (ThresholdContagion reuse) + metrics (core+network).
+# The exact commit is pinned in Cargo.lock.
 socsim-core       = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-core" }
 socsim-engine     = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-engine" }
 socsim-net        = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-net" }
 socsim-mechanisms = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-mechanisms" }
 socsim-metrics    = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-metrics", features = ["core", "network"] }
-socsim-results    = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-results" }
+
+# runvault — run directory creation, naming, and the record itself (config.json /
+# metrics.csv / events.jsonl / reference.csv / status.json / manifest.csv).
+# It replaces socsim-results: this crate no longer names its own output directory.
+runvault = { git = "https://github.com/akitenkrad/rs-runvault", branch = "main" }
 
 # Optional LLM ablation layer (Phase 3). Only compiled with `--features llm`.
 # The "live" feature enables the Ollama-first → OpenAI-fallback + prompt-cache

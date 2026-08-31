@@ -1,4 +1,4 @@
-//! 「沈黙の螺旋」固有の評価指標 (ローカル実装) と CSV 行構造体．
+//! 「沈黙の螺旋」固有の評価指標 (ローカル実装) と tick ごとの集計構造体．
 //!
 //! 正準統計 (mean / variance / shannon_entropy / hhi / distinct_clusters) は
 //! `socsim-metrics::stats` を流用し，論文固有の意味を持つ指標
@@ -10,7 +10,11 @@ use socsim_metrics::stats;
 
 use crate::world::{Expression, SpiralWorld};
 
-/// 1 tick の集計メトリクス (metrics.csv の 1 行)．
+/// 1 tick の集計メトリクス．
+///
+/// フィールドは 1 つずつ runvault の指標になる (`record::log_step`)．旧 wide な
+/// `metrics.csv` の列名をそのまま指標名にしてあるので，移行の前後で数を突き合わせ
+/// られる．
 #[derive(Debug, Clone, Serialize)]
 pub struct Metrics {
     /// tick．

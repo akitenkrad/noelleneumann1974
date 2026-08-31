@@ -7,7 +7,7 @@
 end-to-end の実行:
 
 ```bash
-cargo run --release -- reproduce --seed 42      # reproduction_report.json を書く
+cargo run --release -- reproduce --seed 42      # results/noelleneumann/ 下に run 1 本を書く
 uv run noelleneumann-tools reproduce            # PASS / off-anchor テーブルを表示
 ```
 
@@ -15,13 +15,15 @@ uv run noelleneumann-tools reproduce            # PASS / off-anchor テーブル
 
 | アンカー | 論文値 | 指標 | 目標帯 |
 |--------|--------|------|--------|
-| 列車テスト「議論したい」(Table 1) | 36% | `voice_volume` | 0.30--0.42 |
-| 勝ち組の発言意欲 (Table 2) | 53% | 多数派陣営の発言比 | 0.45--0.65 |
-| 負け組の発言意欲 (Table 2) | 28% | 少数派陣営の発言比 | 0.15--0.40 |
-| **多数派/少数派非対称 (H1 中核)** | OR ≈ 2.9 | `majority_voice_ratio` (log-OR) | **> 0.8** |
-| 現在気候の知覚 (Table 4) | 49% / 43% | 陣営別 `π_now` 平均 | 0.40--0.60 |
-| **未来評価ギャップ (H5)** | 70% vs 23% | `future_assessment_gap` | **> 0.4** |
-| **ハードコア境界** | 17--25% 少数派が多数派より発言意欲高 | `hardcore_frac=0.25` の `hardcore_survival` | **> 0.7** |
+| 列車テスト「議論したい」(Table 1) | 36% | `steady_voice_volume` | 0.30--0.42 |
+| 勝ち組の発言意欲 (Table 2) | 53% | `final_majority_voice` | 0.45--0.65 |
+| 負け組の発言意欲 (Table 2) | 28% | `final_minority_voice` | 0.15--0.40 |
+| **多数派/少数派非対称 (H1 中核)** | OR ≈ 2.9 | `steady_majority_voice_ratio` (log-OR) | **> 0.8** |
+| 現在気候の知覚 (Table 4) | 49% / 43% | `final_pi_now_pro` / `final_pi_now_con` | 0.40--0.55 / 0.40--0.60 |
+| **未来評価ギャップ (H5)** | 70% vs 23% | `steady_future_assessment_gap` | **> 0.4** |
+| **ハードコア境界** | 17--25% 少数派が多数派より発言意欲高 | `boundary_hardcore_survival` (`hardcore_frac=0.25`) | **> 0.7** |
+
+「論文値」の列と「目標帯」の列は，意図して別のファイルに置いてある．論文自身の数 (Table 1 / 2 / 4 のパーセント) は出典付きで run の `reference.csv` へ，帯と，論文の数を持たない 3 つのアンカー (H1・H5・ハードコア) は本再現のものなので `events.jsonl` の `x.noelleneumann1974.anchor` へ書く．1 行に混ぜると見分けがつかなくなる — それを防ぐために `reference.csv` がある．
 
 ## 指標の定義
 

@@ -7,7 +7,7 @@ The paper is an empirical study, not an ABM, so reproduction compares the model'
 Run it end-to-end:
 
 ```bash
-cargo run --release -- reproduce --seed 42      # writes reproduction_report.json
+cargo run --release -- reproduce --seed 42      # one runvault run under results/noelleneumann/
 uv run noelleneumann-tools reproduce            # prints the PASS / off-anchor table
 ```
 
@@ -15,13 +15,15 @@ uv run noelleneumann-tools reproduce            # prints the PASS / off-anchor t
 
 | Anchor | Paper value | Metric | Target band |
 |--------|-------------|--------|-------------|
-| Train-test willingness to discuss (Table 1) | 36% | `voice_volume` | 0.30–0.42 |
-| Winning camp voicing (Table 2) | 53% | majority-camp voicing | 0.45–0.65 |
-| Losing camp voicing (Table 2) | 28% | minority-camp voicing | 0.15–0.40 |
-| **Majority/minority asymmetry (H1 core)** | OR ≈ 2.9 | `majority_voice_ratio` (log-OR) | **> 0.8** |
-| Current-climate perception (Table 4) | 49% / 43% | per-camp mean `π_now` | 0.40–0.60 |
-| **Future-assessment gap (H5)** | 70% vs 23% | `future_assessment_gap` | **> 0.4** |
-| **Hardcore boundary** | 17–25% minority voice more than the majority | `hardcore_survival` at `hardcore_frac=0.25` | **> 0.7** |
+| Train-test willingness to discuss (Table 1) | 36% | `steady_voice_volume` | 0.30–0.42 |
+| Winning camp voicing (Table 2) | 53% | `final_majority_voice` | 0.45–0.65 |
+| Losing camp voicing (Table 2) | 28% | `final_minority_voice` | 0.15–0.40 |
+| **Majority/minority asymmetry (H1 core)** | OR ≈ 2.9 | `steady_majority_voice_ratio` (log-OR) | **> 0.8** |
+| Current-climate perception (Table 4) | 49% / 43% | `final_pi_now_pro` / `final_pi_now_con` | 0.40–0.55 / 0.40–0.60 |
+| **Future-assessment gap (H5)** | 70% vs 23% | `steady_future_assessment_gap` | **> 0.4** |
+| **Hardcore boundary** | 17–25% minority voice more than the majority | `boundary_hardcore_survival` (`hardcore_frac=0.25`) | **> 0.7** |
+
+The "paper value" column and the "target band" column live in different files, on purpose. The paper's own numbers — the Table 1 / 2 / 4 percentages — go to the run's `reference.csv`, each with the source it was read from. The bands, and the three anchors that have no paper number at all (H1, H5, hardcore), are this replication's own and go to `events.jsonl` as `x.noelleneumann1974.anchor`. Merged into one row they would stop being distinguishable, which is what `reference.csv` exists to prevent.
 
 ## How the metrics are defined
 

@@ -1,38 +1,37 @@
 //! オフライン (LLM 不要) スモーク: scripted mock で LLM 版パイプライン全体を駆動し，
-//! 本番 `run` と同じ writer で results を書き出す (live LLM 非依存)．
+//! 本番 `run` と同じ経路で runvault の run ディレクトリへ書き出す (live LLM 非依存)．
 //!
 //! Usage:
 //!     cargo run --release --features llm --example mock_smoke -- results
 //!
+//! 引数は runvault の results ルート (run ディレクトリの名前は runvault が決める)．
 //! feature `llm` 無しでビルドした場合は何もせずメッセージのみ出す．
 
 #[cfg(feature = "llm")]
 fn main() {
     use noelleneumann_spiral_simulation::config::{Config, DecisionMode};
-    use noelleneumann_spiral_simulation::llm::{run_with_client, wrap_client};
-    use noelleneumann_spiral_simulation::simulation::{
-        ensure_output_dir, save_metrics, save_opinions, write_json_file,
-    };
+    use noelleneumann_spiral_simulation::record::{self, DOMAIN, EXPERIMENT, REPO_ID};
+    use noelleneumann_spiral_simulation::simulation::{run_prepared, save_opinions, PreparedLlm};
+    use runvault::{Run, RunOptions};
     use socsim_llm::mock::ScriptedClient;
     use socsim_llm::PromptCache;
-    use socsim_results::{timestamp, write_json};
 
-    let base = std::env::args()
+    use noelleneumann_spiral_simulation::llm::wrap_client;
+
+    let results_root = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "results".to_string());
-    let ts = timestamp();
-    let output_dir = format!("{}/{}_mock", base, ts);
 
-    let cfg = Config {
+    let seed = 42u64;
+    let mut cfg = Config {
         n: 200,
         true_support: 0.37,
         t_max: 30,
-        seed: Some(42),
+        seed: Some(seed),
         decision_mode: DecisionMode::Llm,
-        output_dir: output_dir.clone(),
+        output_dir: String::new(),
         ..Config::default()
     };
-    ensure_output_dir(&output_dir);
 
     let backend = ScriptedClient::new("mock-spiral", |prompt: &str| {
         let favourable = prompt.contains("the clear majority") || prompt.contains("roughly half");
@@ -42,28 +41,51 @@ fn main() {
             "I would feel isolated.\nSILENT".to_string()
         }
     });
-    let client = wrap_client(backend, PromptCache::in_memory());
+    // mock は in-memory キャッシュで回す (永続キャッシュは live 経路のもの)．
+    let prepared = PreparedLlm::new(
+        wrap_client(backend, PromptCache::in_memory()),
+        cfg.llm_temperature,
+    );
+    let identity = prepared.identity().clone();
 
-    let result = run_with_client(&cfg, client);
-    save_metrics(&result.metrics_history, &output_dir);
-    save_opinions(&result.snapshots, &output_dir);
-    write_json(
-        &cfg.to_run_config_json(),
-        format!("{}/config.json", output_dir),
+    let parameters = cfg.to_parameters(seed);
+    let mut rv = Run::start(
+        RunOptions::new(EXPERIMENT, "mock-smoke")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&results_root)
+            .parameters(&parameters)
+            .expect("runvault: parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .master_seed(seed)
+            .llm(record::llm_block(
+                &identity.model,
+                &identity.endpoint,
+                identity.temperature,
+            ))
+            .replication(record::replication()),
     )
-    .expect("config.json の書き込みに失敗");
-    let meta = serde_json::json!({
-        "decision_mode": "llm",
-        "backend": "mock::ScriptedClient",
-        "temperature": 0.0,
-        "seed": cfg.seed,
-    });
-    write_json_file(&meta, &format!("{}/llm_meta.json", output_dir));
+    .expect("runvault: run の開始に失敗");
 
-    println!("mock smoke wrote: {output_dir}");
+    cfg.output_dir = rv.dir().join("artifacts").to_string_lossy().into_owned();
+
+    let (result, usage) = run_prepared(&cfg, prepared);
+    save_opinions(&result.snapshots, &cfg.output_dir);
+    record::log_simulation(&mut rv, &result);
+    record::log_llm_usage(&mut rv, &usage);
+
     println!("final_tick: {}", result.final_tick);
     let last = result.metrics_history.last().unwrap();
     println!("voice_volume: {:.4}", last.voice_volume);
+    println!(
+        "LLM 呼び出し: {} | cache-hit: {} ({:.1}%)",
+        usage.calls,
+        usage.cache_hits,
+        usage.cache_hit_rate * 100.0
+    );
+
+    let dir = rv.finish().expect("runvault: run の完了に失敗");
+    println!("mock smoke wrote: {}", dir.display());
 }
 
 #[cfg(not(feature = "llm"))]

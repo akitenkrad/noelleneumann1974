@@ -1,4 +1,4 @@
-//! 実行設定 (`Config`) と config.json シリアライズ．
+//! 実行設定 (`Config`) と，runvault へ渡す実験条件のシリアライズ．
 
 use serde::Serialize;
 
@@ -95,7 +95,9 @@ pub struct Config {
     pub decision_mode: DecisionMode,
     /// 乱数シード (省略時はランダム)．
     pub seed: Option<u64>,
-    /// 結果出力ディレクトリ．
+    /// 生成物 (`opinions.csv`) の出力先．runvault の run ディレクトリの
+    /// `artifacts/` を呼び出し側が入れる．実験条件ではないので
+    /// [`RunParameters`] には載せない．
     pub output_dir: String,
 
     // ── LLM 層設定 (rule モードでは無視される．設計書 §7) ──────────────────
@@ -156,10 +158,13 @@ impl Default for Config {
     }
 }
 
-/// `config.json` の構造体．
+/// 実験条件 (runvault の `config.json` の `parameters` に入る)．
+///
+/// どのサブコマンドの実行かは `run.json` の `subcommand` が持つので `command` は
+/// 持たない．出力先も持たない — run ディレクトリが出力先そのものである．
+/// `seed` は実体化済みの値で，`--seed` を省いた実行でも «実際に使われたシード» が残る．
 #[derive(Serialize)]
-pub struct RunConfigJson {
-    pub command: &'static str,
+pub struct RunParameters {
     pub n: usize,
     pub true_support: f64,
     pub network_model: String,
@@ -173,7 +178,7 @@ pub struct RunConfigJson {
     pub hardcore_frac: f64,
     pub t_max: usize,
     pub decision_mode: String,
-    pub seed: Option<u64>,
+    pub seed: u64,
     // モデル定数も記録 (再現性のため)．
     pub beta_0: f64,
     pub beta_b: f64,
@@ -185,10 +190,9 @@ pub struct RunConfigJson {
 }
 
 impl Config {
-    /// run 用の config.json 構造体へ変換する．
-    pub fn to_run_config_json(&self) -> RunConfigJson {
-        RunConfigJson {
-            command: "run",
+    /// 実験条件へ変換する．`seed` は呼び出し側が実体化した値を渡す．
+    pub fn to_parameters(&self, seed: u64) -> RunParameters {
+        RunParameters {
             n: self.n,
             true_support: self.true_support,
             network_model: self.network_model.label().to_string(),
@@ -202,7 +206,7 @@ impl Config {
             hardcore_frac: self.hardcore_frac,
             t_max: self.t_max,
             decision_mode: self.decision_mode.label().to_string(),
-            seed: self.seed,
+            seed,
             beta_0: self.beta_0,
             beta_b: self.beta_b,
             beta_u: self.beta_u,

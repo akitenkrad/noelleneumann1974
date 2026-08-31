@@ -9,13 +9,15 @@ noelleneumann1974/
 ├── simulation/                    # Rust crate `noelleneumann-simulation` (bin `noelleneumann`)
 │   ├── src/
 │   │   ├── main.rs                # clap CLI: run / sweep / reproduce
-│   │   ├── config.rs              # Config, NetworkModel, DecisionMode, JSON serialization
+│   │   ├── config.rs              # Config, NetworkModel, DecisionMode, RunParameters
 │   │   ├── world.rs               # SpiralWorld (WorldState + Neighbors + BinaryState), Expression
 │   │   ├── mechanisms.rs          # media_signal / issue_salience / fear_appraisal /
 │   │   │                          #   future_assessment / voice_decision / silence_spiral /
 │   │   │                          #   climate_quasi_stat + VoiceOracle trait + RuleOracle
-│   │   ├── metrics.rs             # paper-specific metrics + Metrics CSV row
+│   │   ├── metrics.rs             # paper-specific metrics + the per-tick Metrics struct
 │   │   ├── simulation.rs          # init_world + run drivers (SimulationBuilder wiring)
+│   │   ├── record.rs              # runvault: research metadata, long-form metrics,
+│   │   │                          #   terminal/observation events, anchors, derived seeds
 │   │   ├── llm.rs                 # (feature `llm`) thin re-export shim over socsim-llm
 │   │   ├── prompts.rs             # LLM introspection prompt + response parser
 │   │   └── lib.rs                 # public API for tests / examples
@@ -25,7 +27,8 @@ noelleneumann1974/
 │   ├── cli.py / visualize.py / visualize_sweep.py
 │   ├── show_experiment_settings.py / reproduce_paper.py
 ├── docs/                          # this documentation (bilingual)
-└── results/                       # runtime output (gitignored)
+└── results/                       # runvault results root (gitignored)
+    └── noelleneumann/             #   one directory per run, named by runvault
 ```
 
 ## The socsim framework
@@ -37,8 +40,9 @@ The simulation builds on [socsim](https://github.com/akitenkrad/rs-social-simula
 - `socsim-net` — `SocialNetwork` (Watts–Strogatz default; Erdős–Rényi and Barabási–Albert selectable).
 - `socsim-mechanisms` — `PerAgentThresholdContagionMechanism`, reused directly for the hardcore / preference-falsification cascade (each agent's own θ_i is read from the world via `ActivationThreshold`).
 - `socsim-metrics` (features `core`, `network`) — canonical `stats` (mean / variance / shannon_entropy / hhi / distinct_clusters) and `network::cascade_size`.
-- `socsim-results` — timestamped run directories, the `latest` symlink, and CSV/JSON writers.
 - `socsim-llm` (features `live`) — only compiled with the optional `llm` Cargo feature, for the introspection ablation.
+
+Where the results go is not socsim's job any more: [runvault](https://github.com/akitenkrad/rs-runvault) creates the run directory, names it, and owns `config.json` / `metrics.csv` / `events.jsonl` / `reference.csv` / `status.json` / `manifest.csv`. This crate no longer builds timestamped directory names or a `latest` symlink of its own.
 
 ## The two-layer world
 

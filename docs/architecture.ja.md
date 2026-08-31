@@ -9,13 +9,15 @@ noelleneumann1974/
 ├── simulation/                    # Rust crate `noelleneumann-simulation` (bin `noelleneumann`)
 │   ├── src/
 │   │   ├── main.rs                # clap CLI: run / sweep / reproduce
-│   │   ├── config.rs              # Config / NetworkModel / DecisionMode / JSON シリアライズ
+│   │   ├── config.rs              # Config / NetworkModel / DecisionMode / RunParameters
 │   │   ├── world.rs               # SpiralWorld (WorldState + Neighbors + BinaryState) / Expression
 │   │   ├── mechanisms.rs          # media_signal / issue_salience / fear_appraisal /
 │   │   │                          #   future_assessment / voice_decision / silence_spiral /
 │   │   │                          #   climate_quasi_stat + VoiceOracle トレイト + RuleOracle
-│   │   ├── metrics.rs             # 論文固有指標 + Metrics CSV 行
+│   │   ├── metrics.rs             # 論文固有指標 + tick ごとの Metrics 構造体
 │   │   ├── simulation.rs          # init_world + run ドライバ (SimulationBuilder 配線)
+│   │   ├── record.rs              # runvault: 論文メタデータ / long 形式の指標 /
+│   │   │                          #   terminal・observation イベント / 帯照合 / 派生シード
 │   │   ├── llm.rs                 # (feature `llm`) socsim-llm の薄い re-export シム
 │   │   ├── prompts.rs             # LLM 内省プロンプト + 応答パーサ
 │   │   └── lib.rs                 # テスト / 例向けの公開 API
@@ -23,7 +25,8 @@ noelleneumann1974/
 │   └── tests/                     # integration_test.rs + llm_mock_test.rs
 ├── tools/src/noelleneumann_tools/ # Python パッケージ `noelleneumann-tools`
 ├── docs/                          # 本ドキュメント (bilingual)
-└── results/                       # 実行時生成 (gitignore 対象)
+└── results/                       # runvault の results ルート (gitignore 対象)
+    └── noelleneumann/             #   run 1 本 1 ディレクトリ．命名は runvault
 ```
 
 ## socsim フレームワーク
@@ -35,8 +38,9 @@ noelleneumann1974/
 - `socsim-net` — `SocialNetwork` (Watts--Strogatz 既定．ER / BA も切替可)．
 - `socsim-mechanisms` — `PerAgentThresholdContagionMechanism`．ハードコア / 選好偽装カスケードへ直接流用 (各エージェントの per-agent 閾値 θ_i を世界状態の `ActivationThreshold` から読む)．
 - `socsim-metrics` (features `core`, `network`) — 正準 `stats` (mean / variance / shannon_entropy / hhi / distinct_clusters) と `network::cascade_size`．
-- `socsim-results` — タイムスタンプ付き run ディレクトリ，`latest` シンボリックリンク，CSV / JSON writer．
 - `socsim-llm` (features `live`) — 任意の `llm` Cargo feature でのみコンパイルされる内省 ablation 用．
+
+出力の置き場は socsim の仕事ではなくなった: run ディレクトリの作成・命名と `config.json` / `metrics.csv` / `events.jsonl` / `reference.csv` / `status.json` / `manifest.csv` は [runvault](https://github.com/akitenkrad/rs-runvault) が持つ．本クレートはタイムスタンプ付きディレクトリ名も `latest` シンボリックリンクも自分では作らない．
 
 ## 二層の世界
 

@@ -2,17 +2,26 @@
 //!
 //! `run`       : 単一条件で「沈黙の螺旋」を実行する (rule / llm)．
 //! `sweep`     : η_m / network_beta / α 等を走査して境界条件を集計する．
+//!               条件 1 点ごとに子 run を起こし，その中で `runs` 本の試行を回す．
 //! `reproduce` : §5 のアレンスバッハ調査 Table 1--5 アンカーと baseline 出力を照合する．
+//!
+//! 出力の置き場と同一性は runvault が持つ．タイムスタンプ付きディレクトリも
+//! `latest` シンボリックリンクもこちらでは作らず，`Run::start` が決めた run
+//! ディレクトリへ書く．
 
 use clap::{Parser, Subcommand};
-use socsim_results::{refresh_latest_symlink, timestamp, write_csv, write_json};
+use runvault::{Lineage, Run, RunOptions};
+use serde::Serialize;
 
 use noelleneumann_spiral_simulation::config::{
-    parse_decision_mode, parse_network_model, Config, DecisionMode,
+    parse_decision_mode, parse_network_model, Config, DecisionMode, RunParameters,
 };
 use noelleneumann_spiral_simulation::metrics::{pi_now_by_camp, voice_by_camp, Metrics};
+use noelleneumann_spiral_simulation::record::{
+    self, Anchor, TrialOutcome, DOMAIN, EXPERIMENT, REPO_ID,
+};
 use noelleneumann_spiral_simulation::simulation::{
-    ensure_output_dir, run, run_dispatch_with_meta, save_metrics, save_opinions, write_json_file,
+    final_world, prepare_llm, run, run_prepared, save_opinions, LlmUsage, PreparedLlm,
     SimulationResult,
 };
 
@@ -94,16 +103,18 @@ struct RunArgs {
     /// プロセスをまたいで温暖キャッシュ再生 (cold→warm 100% cache-hit) させる．
     #[arg(long, default_value = ".llm_cache/cache.json")]
     cache_path: String,
-    /// 乱数シード．
+    /// 乱数シード (省略時はここで実体化して記録する)．
     #[arg(long)]
     seed: Option<u64>,
-    /// 結果出力ディレクトリ．
+    /// runvault の results ルート (run ディレクトリの名前は runvault が決める)．
     #[arg(long, default_value = "results")]
     output_dir: String,
 }
 
 impl RunArgs {
-    fn to_config(&self, output_dir: String) -> Config {
+    /// 実体化したシードで `Config` を組む．出力先は `Run::start` が run ディレクトリを
+    /// 決めた後に確定するので，ここでは空にしておく．
+    fn to_config(&self, seed: u64) -> Config {
         let network_model =
             parse_network_model(&self.network_model).unwrap_or_else(|e| panic!("{e}"));
         let decision_mode =
@@ -122,8 +133,8 @@ impl RunArgs {
             hardcore_frac: self.hardcore_frac,
             t_max: self.t_max,
             decision_mode,
-            seed: self.seed,
-            output_dir,
+            seed: Some(seed),
+            output_dir: String::new(),
             llm_temperature: self.llm_temperature,
             llm_seed: self.llm_seed,
             // rule モードでは cache_path は無視されるため None に倒す
@@ -170,7 +181,7 @@ struct SweepArgs {
     /// シード基点．
     #[arg(long, default_value_t = 42)]
     seed: u64,
-    /// 出力ベースディレクトリ．
+    /// runvault の results ルート．
     #[arg(long, default_value = "results")]
     output_dir: String,
 }
@@ -186,9 +197,61 @@ struct ReproduceArgs {
     /// シード基点 (シナリオごとに派生)．
     #[arg(long, default_value_t = 42)]
     seed: u64,
-    /// 出力ベースディレクトリ．
+    /// runvault の results ルート．
     #[arg(long, default_value = "results")]
     output_dir: String,
+}
+
+// ---------------------------------------------------------------------------
+// 実験条件 (runvault の config.json の parameters)
+// ---------------------------------------------------------------------------
+
+/// スイープ親の実験条件．走査するグリッドの定義そのもの．
+#[derive(Serialize)]
+struct SweepParameters {
+    eta_m_values: Vec<f64>,
+    network_beta_values: Vec<f64>,
+    alpha_values: Vec<f64>,
+    network_k_values: Vec<usize>,
+    true_support_values: Vec<f64>,
+    runs: usize,
+    n: usize,
+    hardcore_frac: f64,
+    t_max: usize,
+    seed: u64,
+}
+
+/// スイープの子 run (格子点 1 つ) の実験条件．
+///
+/// `run` の条件に `runs` が付いた形で，`run` とは別のサブコマンド名を持つ．同じ `run`
+/// を名乗らせると，「1 本のシミュレーション」と「同一条件の `runs` 本」という中身の
+/// 違う 2 つが 1 つの名前に同居し，`runvault path --subcommand run` がどちらを返すか
+/// 分からなくなる．
+#[derive(Serialize)]
+struct SweepPointParameters {
+    n: usize,
+    true_support: f64,
+    network_k: usize,
+    network_beta: f64,
+    eta_m: f64,
+    alpha: f64,
+    hardcore_frac: f64,
+    t_max: usize,
+    runs: usize,
+    seed: u64,
+}
+
+/// `reproduce` の実験条件．
+///
+/// baseline シナリオ (社会主義到来 q=0.37) の条件をそのまま持ち，ハードコア境界
+/// シナリオが変える 1 つのパラメータだけを足す．2 つのシナリオは «同じ実行の中の
+/// 比較» なので，子 run には分けない．
+#[derive(Serialize)]
+struct ReproduceParameters {
+    #[serde(flatten)]
+    baseline: RunParameters,
+    /// ハードコア境界シナリオの hardcore 比率 (baseline は 0.05)．
+    boundary_hardcore_frac: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -237,25 +300,56 @@ fn steady_state(result: &SimulationResult) -> Metrics {
     }
 }
 
+/// LLM モードの永続プロンプトキャッシュの親ディレクトリを先に作る．
+///
+/// cold→warm 再生のため `--cache-path` のファイルをプロセスをまたいで保持する．
+fn ensure_cache_parent(cfg: &Config) {
+    if cfg.decision_mode != DecisionMode::Llm {
+        return;
+    }
+    if let Some(path) = cfg.cache_path.as_deref() {
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
 
 fn cmd_run(args: RunArgs) {
-    let ts = timestamp();
-    let output_dir = format!("{}/{}", args.output_dir, ts);
-    let cfg = args.to_config(output_dir.clone());
-    ensure_output_dir(&cfg.output_dir);
+    // シードを実体化してから記録する．--seed 省略時にシミュレーション側で
+    // rand::random に落とすと，実際に使われたシードがどこにも残らない．
+    let seed = args.seed.unwrap_or_else(rand::random::<u64>);
+    let mut cfg = args.to_config(seed);
+    ensure_cache_parent(&cfg);
 
-    // LLM モードでは永続プロンプトキャッシュの親ディレクトリを先に作る
-    // (cold→warm 再生のため `--cache-path` のファイルを跨プロセスで保持する)．
-    if cfg.decision_mode == DecisionMode::Llm {
-        if let Some(path) = cfg.cache_path.as_deref() {
-            if let Some(parent) = std::path::Path::new(path).parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-        }
+    // LLM クライアントは `Run::start` の前に組む — モデル名と endpoint を知っているのは
+    // クライアントを組んだ側だけで，`run.json` の `llm` ブロックはその 2 つを要る．
+    let prepared: Option<PreparedLlm> = match cfg.decision_mode {
+        DecisionMode::Rule => None,
+        DecisionMode::Llm => Some(prepare_llm(&cfg)),
+    };
+
+    let parameters = cfg.to_parameters(seed);
+    let mut options = RunOptions::new(EXPERIMENT, "run")
+        .repo_id(REPO_ID)
+        .domain(DOMAIN)
+        .results_root(&args.output_dir)
+        .parameters(&parameters)
+        .expect("runvault: parameters の組み立てに失敗")
+        .seed_pointers(["/seed"])
+        .master_seed(seed)
+        .replication(record::replication());
+    if let Some(p) = &prepared {
+        let id = p.identity();
+        options = options.llm(record::llm_block(&id.model, &id.endpoint, id.temperature));
     }
+    let mut rv = Run::start(options).expect("runvault: run の開始に失敗");
+
+    // run ディレクトリが出力先そのものになる．意見の軌跡は artifacts/ の下へ．
+    cfg.output_dir = rv.dir().join("artifacts").to_string_lossy().into_owned();
 
     println!("=== Noelle-Neumann 「沈黙の螺旋」 再現実験 ===");
     println!(
@@ -271,46 +365,40 @@ fn cmd_run(args: RunArgs) {
         cfg.beta_fear,
     );
     println!(
-        "hardcore: {} | t_max: {} | mode: {} | seed: {:?}",
+        "hardcore: {} | t_max: {} | mode: {} | seed: {}",
         cfg.hardcore_frac,
         cfg.t_max,
         cfg.decision_mode.label(),
-        cfg.seed
+        seed,
     );
-    println!("出力先: {}", cfg.output_dir);
+    println!("出力先: {}", rv.dir().display());
     println!("-------------------------------------------");
 
-    let (result, llm_meta) = run_dispatch_with_meta(&cfg);
-    save_metrics(&result.metrics_history, &cfg.output_dir);
+    let (result, usage): (SimulationResult, Option<LlmUsage>) = match prepared {
+        None => (run(&cfg), None),
+        Some(p) => {
+            let (result, usage) = run_prepared(&cfg, p);
+            (result, Some(usage))
+        }
+    };
     save_opinions(&result.snapshots, &cfg.output_dir);
 
-    let cfg_path = format!("{}/config.json", cfg.output_dir);
-    write_json(&cfg.to_run_config_json(), &cfg_path).expect("config.json の書き込みに失敗");
-
-    // LLM モードでは `MetadataCollector` 由来の実 cache 統計
-    // (model / endpoint / temperature / seed / calls / cache_hits / cache_hit_rate)
-    // を llm_meta.json に書く (placeholder ではない)．rule モードは LLM 非呼び出しなので書かない．
-    if let Some(meta) = &llm_meta {
-        write_json_file(meta, &format!("{}/llm_meta.json", cfg.output_dir));
-        let calls = meta.get("calls").and_then(|v| v.as_u64()).unwrap_or(0);
-        let cache_hits = meta.get("cache_hits").and_then(|v| v.as_u64()).unwrap_or(0);
-        let cache_hit_rate = meta
-            .get("cache_hit_rate")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let model = meta.get("model").and_then(|v| v.as_str()).unwrap_or("?");
+    record::log_simulation(&mut rv, &result);
+    if let Some(usage) = &usage {
+        record::log_llm_usage(&mut rv, usage);
         println!(
-            "LLM 呼び出し: {} | cache-hit: {} ({:.1}%) | model: {}",
-            calls,
-            cache_hits,
-            cache_hit_rate * 100.0,
-            model,
+            "LLM 呼び出し: {} | cache-hit: {} ({:.1}%)",
+            usage.calls,
+            usage.cache_hits,
+            usage.cache_hit_rate * 100.0,
         );
     }
 
-    let _ = refresh_latest_symlink(&args.output_dir, &ts);
-
     let ss = steady_state(&result);
+    // run は全 tick を観測して metrics.csv に残しているので，観測時刻も全 tick．
+    let observed: Vec<u64> = result.metrics_history.iter().map(|m| m.t as u64).collect();
+    record::log_terminal(&mut rv, "run", seed, cfg.t_max, observed, &result, &ss);
+
     let final_world_metrics = result.metrics_history.last().unwrap();
     println!(
         "収束: {} | tick: {}",
@@ -337,51 +425,17 @@ fn cmd_run(args: RunArgs) {
         final_world_metrics.apparent_support
     );
     println!("opinion_clusters      : {}", ss.opinion_clusters);
-    println!("意見軌跡 → {}/opinions.csv", cfg.output_dir);
-    println!("メトリクス → {}/metrics.csv", cfg.output_dir);
-    println!("設定       → {}/config.json", cfg.output_dir);
-    if llm_meta.is_some() {
-        println!("LLM メタ   → {}/llm_meta.json", cfg.output_dir);
-    }
+
+    let dir = rv.finish().expect("runvault: run の完了に失敗");
+    println!("意見軌跡   → {}/artifacts/opinions.csv", dir.display());
+    println!("メトリクス → {}/metrics.csv", dir.display());
+    println!("終端       → {}/events.jsonl", dir.display());
+    println!("設定       → {}/config.json", dir.display());
 }
 
 // ---------------------------------------------------------------------------
 // sweep
 // ---------------------------------------------------------------------------
-
-#[derive(serde::Serialize)]
-struct SweepRow {
-    eta_m: f64,
-    network_beta: f64,
-    alpha: f64,
-    network_k: usize,
-    true_support: f64,
-    run: usize,
-    seed: u64,
-    voice_volume: f64,
-    majority_voice_ratio: f64,
-    perceived_minus_actual: f64,
-    future_assessment_gap: f64,
-    hardcore_survival: f64,
-    apparent_support: f64,
-    converged: bool,
-    final_tick: usize,
-}
-
-#[derive(serde::Serialize)]
-struct SweepConfigJson {
-    command: &'static str,
-    eta_m_values: Vec<f64>,
-    network_beta_values: Vec<f64>,
-    alpha_values: Vec<f64>,
-    network_k_values: Vec<usize>,
-    true_support_values: Vec<f64>,
-    runs: usize,
-    n: usize,
-    hardcore_frac: f64,
-    t_max: usize,
-    seed: u64,
-}
 
 fn cmd_sweep(args: SweepArgs) {
     let eta_ms = parse_f64_list(&args.eta_m_values);
@@ -390,26 +444,61 @@ fn cmd_sweep(args: SweepArgs) {
     let ks = parse_usize_list(&args.network_k_values);
     let qs = parse_f64_list(&args.true_support_values);
 
-    let ts = timestamp();
-    let sweep_dir = format!("{}/{}_sweep", args.output_dir, ts);
-    std::fs::create_dir_all(&sweep_dir).expect("sweep ディレクトリの作成に失敗");
+    let n_conditions = eta_ms.len() * betas.len() * alphas.len() * ks.len() * qs.len();
+    let n_total = n_conditions * args.runs;
 
-    let n_total = eta_ms.len() * betas.len() * alphas.len() * ks.len() * qs.len() * args.runs;
+    let sweep_parameters = SweepParameters {
+        eta_m_values: eta_ms.clone(),
+        network_beta_values: betas.clone(),
+        alpha_values: alphas.clone(),
+        network_k_values: ks.clone(),
+        true_support_values: qs.clone(),
+        runs: args.runs,
+        n: args.n,
+        hardcore_frac: args.hardcore_frac,
+        t_max: args.t_max,
+        seed: args.seed,
+    };
+
+    // 親 run: 走査グリッドの定義そのものを parameters に持つ．個別条件の指標は書かない．
+    // 親は 1 本のシミュレーションではないので master_seed を名乗らず，base seed は
+    // /parameters.seed と seed_pointers 経由で execution_hash に残る．
+    // sweep_id は runvault が親の run_slug で埋める．
+    let parent = Run::start(
+        RunOptions::new(EXPERIMENT, "sweep")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&sweep_parameters)
+            .expect("runvault: sweep の parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .sweep_parent()
+            .replication(record::replication()),
+    )
+    .expect("runvault: sweep 親 run の開始に失敗");
+
+    let sweep_id = parent
+        .sweep_id()
+        .expect("runvault: sweep 親に sweep_id がありません")
+        .to_string();
+    let parent_run_uid = parent.run_uid().to_string();
+
     println!("=== 「沈黙の螺旋」 パラメータスイープ ===");
     println!(
-        "η_m: {} | β: {} | α: {} | k: {} | q: {} | runs: {} | 合計: {} 実行",
+        "η_m: {} | β: {} | α: {} | k: {} | q: {} | runs: {} | 条件: {} | 合計: {} 実行",
         eta_ms.len(),
         betas.len(),
         alphas.len(),
         ks.len(),
         qs.len(),
         args.runs,
+        n_conditions,
         n_total
     );
-    println!("出力先: {}", sweep_dir);
+    println!("シード (base): {}", args.seed);
+    println!("出力先: {}", parent.dir().display());
     println!("---------------------------------------------------");
 
-    let mut rows: Vec<SweepRow> = Vec::with_capacity(n_total);
     let mut done = 0usize;
 
     for &eta_m in &eta_ms {
@@ -417,17 +506,52 @@ fn cmd_sweep(args: SweepArgs) {
             for &alpha in &alphas {
                 for &network_k in &ks {
                     for &q in &qs {
+                        let params = SweepPointParameters {
+                            n: args.n,
+                            true_support: q,
+                            network_k,
+                            network_beta,
+                            eta_m,
+                            alpha,
+                            hardcore_frac: args.hardcore_frac,
+                            t_max: args.t_max,
+                            runs: args.runs,
+                            seed: args.seed,
+                        };
+
+                        // 子は「その格子点の試行群」そのもの．master_seed は親と同じ
+                        // base で，条件が違えば config_hash が違うので run としては
+                        // 別物になる．同じ条件の繰り返しは無いので replicate_index は 0．
+                        let mut child = Run::start(
+                            RunOptions::new(EXPERIMENT, "sweep-point")
+                                .repo_id(REPO_ID)
+                                .domain(DOMAIN)
+                                .results_root(&args.output_dir)
+                                .parameters(&params)
+                                .expect("runvault: 子 run の parameters の組み立てに失敗")
+                                .seed_pointers(["/seed"])
+                                .master_seed(args.seed)
+                                .replicate_index(0)
+                                .lineage(Lineage {
+                                    sweep_id: Some(sweep_id.clone()),
+                                    parent_run_uid: Some(parent_run_uid.clone()),
+                                    ..Default::default()
+                                })
+                                .replication(record::replication()),
+                        )
+                        .expect("runvault: 子 run の開始に失敗");
+
+                        let mut trials: Vec<TrialOutcome> = Vec::with_capacity(args.runs);
                         for run_idx in 0..args.runs {
-                            let seed = socsim_core::derive_seed(
+                            // 各 (条件, run) に独立なシードを派生させる (explicit identity)．
+                            let seed = record::trial_seed(
                                 args.seed,
-                                &[
-                                    eta_m.to_bits(),
-                                    network_beta.to_bits(),
-                                    alpha.to_bits(),
-                                    network_k as u64,
-                                    q.to_bits(),
-                                    run_idx as u64,
-                                ],
+                                eta_m,
+                                network_beta,
+                                alpha,
+                                network_k,
+                                q,
+                                run_idx,
                             );
                             let cfg = Config {
                                 n: args.n,
@@ -439,87 +563,76 @@ fn cmd_sweep(args: SweepArgs) {
                                 hardcore_frac: args.hardcore_frac,
                                 t_max: args.t_max,
                                 seed: Some(seed),
-                                output_dir: sweep_dir.clone(),
+                                output_dir: String::new(),
                                 ..Config::default()
                             };
                             let result = run(&cfg);
-                            let ss = steady_state(&result);
-                            rows.push(SweepRow {
-                                eta_m,
-                                network_beta,
-                                alpha,
-                                network_k,
-                                true_support: q,
-                                run: run_idx,
+                            let steady = steady_state(&result);
+                            // sweep が見るのは各試行の定常状態だけなので，観測時刻も
+                            // その最終 tick 1 点．
+                            record::log_terminal(
+                                &mut child,
+                                &format!("trial-{run_idx}"),
                                 seed,
-                                voice_volume: ss.voice_volume,
-                                majority_voice_ratio: ss.majority_voice_ratio,
-                                perceived_minus_actual: ss.perceived_minus_actual,
-                                future_assessment_gap: ss.future_assessment_gap,
-                                hardcore_survival: ss.hardcore_survival,
-                                apparent_support: ss.apparent_support,
+                                args.t_max,
+                                [result.final_tick as u64],
+                                &result,
+                                &steady,
+                            );
+                            trials.push(TrialOutcome {
                                 converged: result.converged,
                                 final_tick: result.final_tick,
+                                steady,
                             });
                             done += 1;
                         }
+                        record::log_condition_summary(&mut child, &trials);
+
+                        let mean_log_or = trials
+                            .iter()
+                            .map(|t| t.steady.majority_voice_ratio)
+                            .sum::<f64>()
+                            / trials.len() as f64;
+                        println!(
+                            "[{}/{}] η_m={} β={} α={} k={} q={} 完了 ({} 試行) \
+                             → mean log-OR={:.3}",
+                            done,
+                            n_total,
+                            eta_m,
+                            network_beta,
+                            alpha,
+                            network_k,
+                            q,
+                            args.runs,
+                            mean_log_or,
+                        );
+
+                        child.finish().expect("runvault: 子 run の完了に失敗");
                     }
                 }
             }
         }
-        println!("[{}/{}] η_m={} まで完了", done, n_total, eta_m);
     }
 
-    let summary_path = format!("{}/sweep_summary.csv", sweep_dir);
-    write_csv(&rows, &summary_path).expect("sweep_summary.csv の書き込みに失敗");
-
-    let cfg_json = SweepConfigJson {
-        command: "sweep",
-        eta_m_values: eta_ms,
-        network_beta_values: betas,
-        alpha_values: alphas,
-        network_k_values: ks,
-        true_support_values: qs,
-        runs: args.runs,
-        n: args.n,
-        hardcore_frac: args.hardcore_frac,
-        t_max: args.t_max,
-        seed: args.seed,
-    };
-    let cfg_path = format!("{}/sweep_config.json", sweep_dir);
-    write_json(&cfg_json, &cfg_path).expect("sweep_config.json の書き込みに失敗");
-
-    let _ = refresh_latest_symlink(&args.output_dir, &format!("{}_sweep", ts));
-
+    let dir = parent
+        .finish()
+        .expect("runvault: sweep 親 run の完了に失敗");
     println!("===================================================");
     println!("スイープ完了: {} 実行", n_total);
-    println!("サマリ → {}/sweep_summary.csv", sweep_dir);
+    println!("スイープ定義 → {}/config.json", dir.display());
+    println!("各条件の試行は子 run (subcommand=sweep-point) の events.jsonl にあります");
 }
 
 // ---------------------------------------------------------------------------
 // reproduce
 // ---------------------------------------------------------------------------
 
-#[derive(serde::Serialize)]
-struct AnchorResult {
-    name: String,
-    paper_value: String,
-    observed: f64,
-    target_lo: f64,
-    target_hi: f64,
-    pass: bool,
-}
+/// ハードコア境界シナリオの hardcore 比率 (baseline は 0.05)．
+const BOUNDARY_HARDCORE_FRAC: f64 = 0.25;
 
 fn cmd_reproduce(args: ReproduceArgs) {
-    let ts = timestamp();
-    let out_dir = format!("{}/{}_reproduce", args.output_dir, ts);
-    ensure_output_dir(&out_dir);
-
-    println!("=== 「沈黙の螺旋」 Table 1--5 アンカー再現 ===");
-    println!("出力先: {}", out_dir);
-
     // 社会主義到来シナリオ (q=0.37): 勝/負陣営の発言意欲非対称 (Table 2)．
-    let cfg = Config {
+    let mut cfg = Config {
         n: args.n,
         true_support: 0.37,
         eta_m: 0.5,
@@ -527,117 +640,99 @@ fn cmd_reproduce(args: ReproduceArgs) {
         hardcore_frac: 0.05,
         t_max: args.t_max,
         seed: Some(args.seed),
-        output_dir: out_dir.clone(),
+        output_dir: String::new(),
         ..Config::default()
     };
-    let result = run(&cfg);
-    let final_world = &result;
-    let ss = steady_state(final_world);
 
-    // 最終世界での陣営別指標を取り直すため，最終 snapshot を使う代わりに run を再実行
-    // して world を取得 (run は world を返さないので metrics 履歴の定常値で代替する)．
-    // 陣営別 voice / pi は最終 tick の世界状態が必要なので，専用にもう一度実行する．
-    let world = noelleneumann_spiral_simulation::simulation::final_world(&cfg);
+    let parameters = ReproduceParameters {
+        baseline: cfg.to_parameters(args.seed),
+        boundary_hardcore_frac: BOUNDARY_HARDCORE_FRAC,
+    };
+    let mut rv = Run::start(
+        RunOptions::new(EXPERIMENT, "reproduce")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&parameters)
+            .expect("runvault: parameters の組み立てに失敗")
+            .seed_pointers(["/seed"])
+            .master_seed(args.seed)
+            .replication(record::replication()),
+    )
+    .expect("runvault: run の開始に失敗");
+
+    cfg.output_dir = rv.dir().join("artifacts").to_string_lossy().into_owned();
+
+    println!("=== 「沈黙の螺旋」 Table 1--5 アンカー再現 ===");
+    println!("出力先: {}", rv.dir().display());
+
+    let result = run(&cfg);
+    let ss = steady_state(&result);
+    save_opinions(&result.snapshots, &cfg.output_dir);
+    record::log_simulation(&mut rv, &result);
+    let observed: Vec<u64> = result.metrics_history.iter().map(|m| m.t as u64).collect();
+    record::log_terminal(
+        &mut rv, "baseline", args.seed, cfg.t_max, observed, &result, &ss,
+    );
+
+    // 陣営別 voice / pi は最終 tick の世界状態が必要なので，専用にもう一度実行して
+    // world を取得する (ドライバ本体と同一の配線・seed なので軌跡は同一)．
+    let world = final_world(&cfg);
     let (maj_voice, min_voice) = voice_by_camp(&world);
     let (pi_pro, pi_con) = pi_now_by_camp(&world);
 
-    let mut anchors: Vec<AnchorResult> = Vec::new();
-    let mut push = |name: &str, paper: &str, obs: f64, lo: f64, hi: f64| {
-        anchors.push(AnchorResult {
-            name: name.to_string(),
-            paper_value: paper.to_string(),
-            observed: obs,
-            target_lo: lo,
-            target_hi: hi,
-            pass: obs >= lo && obs <= hi,
-        });
-    };
-
-    // Table 1: 全体発言意欲 36%．
-    push(
-        "voice_volume (Table 1: 36%)",
-        "0.36",
-        ss.voice_volume,
-        0.30,
-        0.42,
-    );
-    // Table 2: 勝ち組 53% / 負け組 28%．
-    push(
-        "majority_voice (Table 2: 53%)",
-        "0.53",
-        maj_voice,
-        0.45,
-        0.65,
-    );
-    push(
-        "minority_voice (Table 2: 28%)",
-        "0.28",
-        min_voice,
-        0.15,
-        0.40,
-    );
-    // H1 中核アンカー: log-OR > 0.8．
-    push(
-        "majority_voice_ratio (H1: log-OR>0.8)",
-        ">0.8",
-        ss.majority_voice_ratio,
-        0.8,
-        f64::INFINITY,
-    );
-    // Table 4: pi_now 賛成派 ~0.49 / 反対派 ~0.43 (1-0.57)．
-    push("pi_now pro (Table 4: ~0.49)", "0.49", pi_pro, 0.40, 0.55);
-    push("pi_now con (Table 4: ~0.43)", "0.43", pi_con, 0.40, 0.60);
-    // H5 アンカー: future_assessment_gap > 0.4 (Table 5: 70% vs 23%)．
-    push(
-        "future_assessment_gap (H5: >0.4)",
-        ">0.4",
-        ss.future_assessment_gap,
-        0.4,
-        f64::INFINITY,
-    );
-
-    // ハードコア境界シナリオ (hardcore_frac=0.25)．
+    // ハードコア境界シナリオ (hardcore_frac=0.25)．baseline との比較は 1 回の実行の
+    // 中で定義されているので，子 run には分けない．
     let cfg_hc = Config {
-        hardcore_frac: 0.25,
+        hardcore_frac: BOUNDARY_HARDCORE_FRAC,
         ..cfg.clone()
     };
-    let world_hc = noelleneumann_spiral_simulation::simulation::final_world(&cfg_hc);
+    let world_hc = final_world(&cfg_hc);
     let hc_survival = noelleneumann_spiral_simulation::metrics::hardcore_survival(&world_hc);
-    push(
-        "hardcore_survival (hardcore_frac=0.25: >0.7)",
-        ">0.7",
-        hc_survival,
-        0.7,
-        f64::INFINITY,
-    );
+
+    // 帯はどれも本再現が置いたもので，論文の報告値ではない (論文値は
+    // record::log_paper_references が出典付きで reference.csv に書く)．
+    let anchors = vec![
+        Anchor::band("steady_voice_volume", ss.voice_volume, 0.30, 0.42),
+        Anchor::band("final_majority_voice", maj_voice, 0.45, 0.65),
+        Anchor::band("final_minority_voice", min_voice, 0.15, 0.40),
+        Anchor::at_least("steady_majority_voice_ratio", ss.majority_voice_ratio, 0.8),
+        Anchor::band("final_pi_now_pro", pi_pro, 0.40, 0.55),
+        Anchor::band("final_pi_now_con", pi_con, 0.40, 0.60),
+        Anchor::at_least(
+            "steady_future_assessment_gap",
+            ss.future_assessment_gap,
+            0.4,
+        ),
+        Anchor::at_least("boundary_hardcore_survival", hc_survival, 0.7),
+    ];
+    record::log_anchor_observations(&mut rv, &anchors);
+    record::log_anchors(&mut rv, &anchors);
+    record::log_paper_references(&mut rv);
 
     println!("---------------------------------------------------");
     for a in &anchors {
-        let hi = if a.target_hi.is_infinite() {
-            "∞".to_string()
-        } else {
-            format!("{:.2}", a.target_hi)
+        let hi = match a.target_hi {
+            Some(hi) => format!("{:.2}", hi),
+            None => "∞".to_string(),
         };
         println!(
-            "[{}] {:<42} obs={:.4} target=[{:.2},{}] paper={}",
+            "[{}] {:<30} obs={:.4} target=[{:.2},{}]",
             if a.pass { "PASS" } else { "OFF " },
-            a.name,
+            a.indicator,
             a.observed,
             a.target_lo,
             hi,
-            a.paper_value,
         );
     }
     let n_pass = anchors.iter().filter(|a| a.pass).count();
     println!("---------------------------------------------------");
     println!("{}/{} アンカーが in-band", n_pass, anchors.len());
 
-    save_metrics(&result.metrics_history, &out_dir);
-    save_opinions(&result.snapshots, &out_dir);
-    let report = serde_json::json!({ "anchors": anchors });
-    write_json_file(&report, &format!("{}/reproduction_report.json", out_dir));
-    let _ = refresh_latest_symlink(&args.output_dir, &format!("{}_reproduce", ts));
-    println!("レポート → {}/reproduction_report.json", out_dir);
+    let dir = rv.finish().expect("runvault: run の完了に失敗");
+    println!("帯照合   → {}/events.jsonl", dir.display());
+    println!("論文値   → {}/reference.csv", dir.display());
+    println!("観測量   → {}/metrics.csv", dir.display());
 }
 
 // ---------------------------------------------------------------------------

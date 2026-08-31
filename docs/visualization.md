@@ -2,13 +2,17 @@
 
 [English](visualization.md) | [日本語](visualization.ja.md)
 
-The Python package `noelleneumann-tools` reads the CSV/JSON outputs under `results/` and renders figures. Install once at the workspace root with `uv sync`, then run any subcommand. With no `--results-dir`, the tools resolve `results/latest`.
+The Python package `noelleneumann-tools` reads a [runvault](https://github.com/akitenkrad/rs-runvault) run directory and renders figures. Install once at the workspace root with `uv sync`, then run any subcommand.
+
+With no `--results-dir`, the tools ask runvault which run to read (`runvault path --experiment noelleneumann --latest …`) instead of scanning `results/` for the newest-looking directory. Pass `--results-dir` to pick a specific run; a pre-runvault `results/<timestamp>/` directory still works there.
+
+Figures are written **beside** the run, in `results/noelleneumann/figures/<run_slug>/`. `manifest.csv` is settled by `finish()`, so anything added to the run directory afterwards would not be in it.
 
 ## `visualize` — single-run figures
 
 ```bash
 uv run noelleneumann-tools visualize
-uv run noelleneumann-tools visualize --results-dir results/20260530_000000 --output-dir out
+uv run noelleneumann-tools visualize --results-dir "$(runvault path --experiment noelleneumann --latest --subcommand run --standalone)" --output-dir out
 ```
 
 Produces two PNGs:
@@ -19,8 +23,10 @@ Produces two PNGs:
 ## `visualize-sweep` — sweep figures
 
 ```bash
-uv run noelleneumann-tools visualize-sweep --results-dir results/20260530_000000_sweep
+uv run noelleneumann-tools visualize-sweep --sweep-dir "$(runvault path --experiment noelleneumann --latest --subcommand sweep)"
 ```
+
+The one-row-per-trial table is rebuilt from the `terminal` events of the sweep parent's children (`subcommand=sweep-point`); error bars need the individual trials, not the per-condition averages. A pre-runvault `sweep_summary.csv` is read directly when present.
 
 Produces two PNGs, averaging over the seed repetitions per condition:
 
@@ -30,32 +36,34 @@ Produces two PNGs, averaging over the seed repetitions per condition:
 ## `show-experiment-settings` — settings dump
 
 ```bash
-uv run noelleneumann-tools show-experiment-settings --results-dir results/latest
-uv run noelleneumann-tools show-experiment-settings --results-dir results/latest --json
+uv run noelleneumann-tools show-experiment-settings
+uv run noelleneumann-tools show-experiment-settings --json
 ```
 
-Prints the `config.json` (run) or `sweep_config.json` (sweep) of a results directory as an aligned table, plus any `llm_meta.json` (model / endpoint / temperature / seed / cache-hit) when present.
+Prints the run's conditions (`config.json`; runvault keeps them under `parameters`) as an aligned table. Which subcommand the run was is answered by `run.json`. An LLM run also shows its `llm` block (provider / model snapshot / temperature) and the run-scope call breakdown. A pre-runvault directory is read in its own shape, `llm_meta.json` included.
 
 ## `reproduce` — Table 1–5 report
 
 ```bash
-uv run noelleneumann-tools reproduce                 # reads results/latest reproduction_report.json
+uv run noelleneumann-tools reproduce                 # reads the latest reproduce run
 uv run noelleneumann-tools reproduce --run --seed 42 # runs the Rust binary first
 uv run noelleneumann-tools reproduce --json
 ```
 
-Reads the `reproduction_report.json` written by `noelleneumann reproduce` and prints a PASS / off-anchor table against the paper's Table 1–5 values. See [Reproduction](reproduction.md).
+Reads the three files the `reproduce` run wrote — the anchor events, the run-scope observations, and `reference.csv` — and prints a PASS / off-anchor table with the paper's Table 1–5 values beside it. The band shown is this replication's; the `paper=` column comes from `reference.csv` and is the paper's own number. See [Reproduction](reproduction.md).
 
 ## Output files
 
+Everything below is inside one runvault run directory.
+
 | File | Written by | Contents |
 |------|-----------|----------|
-| `opinions.csv` | `run`, `reproduce` | long format: `t, agent_id, b, e, pi_now, pi_fut` |
-| `metrics.csv` | `run`, `reproduce` | per-tick: voice volume, majority_voice_ratio, perceived_minus_actual, future_assessment_gap, hardcore_survival, apparent_support, clusters, entropy |
-| `config.json` | `run` | the run's resolved parameters |
-| `sweep_summary.csv` / `sweep_config.json` | `sweep` | per-condition steady-state metrics / the scan grid |
-| `reproduction_report.json` | `reproduce` | the anchors with observed / target / pass |
-| `llm_meta.json` | LLM runs | model / endpoint / temperature / seed / cache statistics |
+| `artifacts/opinions.csv` | `run`, `reproduce` | long format: `t, agent_id, b, e, pi_now, pi_fut` |
+| `metrics.csv` | all | runvault's long form `run_uid,step,step_unit,scope,name,value`. The stepped rows are the eight per-tick metrics (the old wide columns, same names); the rows without a step describe the whole run (`converged`, `final_tick`, the LLM call breakdown, the `reproduce` observations) |
+| `config.json` | all | the run's conditions, under `parameters` |
+| `events.jsonl` | all | `observation` / `terminal` per unit — one unit for `run` and `reproduce`, one per trial for a sweep child — plus `x.noelleneumann1974.anchor` for `reproduce` |
+| `reference.csv` | `reproduce` | the values the paper reports, with their sources |
+| `run.json` / `status.json` / `manifest.csv` | all | identity (including the `llm` block), outcome and duration, file digests |
 
 ---
 *This file was generated by Claude Code.*

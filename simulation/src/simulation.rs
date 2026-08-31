@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufWriter, Write as _};
+use std::io::BufWriter;
 
 use csv::Writer;
 use rand::Rng;
@@ -12,7 +12,7 @@ use socsim_engine::{RandomActivationScheduler, SimulationBuilder};
 use socsim_mechanisms::PerAgentThresholdContagionMechanism;
 use socsim_net::SocialNetwork;
 
-use crate::config::{Config, DecisionMode, NetworkModel};
+use crate::config::{Config, NetworkModel};
 use crate::mechanisms::{
     ClimateQuasiStatMechanism, FearAppraisalMechanism, FutureAssessmentMechanism,
     IssueSalienceMechanism, MediaSignalMechanism, RuleOracle, SilenceSpiralMechanism,
@@ -236,25 +236,101 @@ pub fn run_with_oracle<O: VoiceOracle + 'static>(
     }
 }
 
-/// LLM 版 run のエントリ (feature `llm` 必須．非 feature 時はパニック)．
+/// LLM バックエンドの同一性 (`run.json` の `llm` ブロックの材料)．
 ///
-/// `cfg.cache_path` を含む [`crate::llm::LlmSettings`] から永続キャッシュ付き本番
-/// クライアントを構築し，cache 統計を集計しつつ `(結果, llm_meta JSON)` を返す．
+/// 実行前に分かる値だけを持つ．どのモデルがどの endpoint で答えるのかを知っているのは
+/// クライアントを組んだ側だけなので，run を開始する前にここまで確定させる．
+#[derive(Debug, Clone)]
+pub struct LlmIdentity {
+    /// バックエンドが名乗ったモデル名．
+    pub model: String,
+    /// バックエンドが名乗った endpoint．
+    pub endpoint: String,
+    /// 生成温度．
+    pub temperature: f32,
+}
+
+/// LLM 呼び出しの内訳 (旧 `llm_meta.json` の calls / cache_hits / cache_hit_rate)．
+///
+/// 実行後にしか分からない値だけを持つ．
+#[derive(Debug, Clone)]
+pub struct LlmUsage {
+    /// 呼び出し回数．
+    pub calls: usize,
+    /// うちキャッシュ命中数．
+    pub cache_hits: usize,
+    /// キャッシュ命中率．
+    pub cache_hit_rate: f64,
+}
+
+/// 組み立て済みの LLM クライアントと，そのバックエンドの同一性．
+///
+/// feature `llm` 無効時は中身を持たない型になる．そちらの `prepare_llm` は値を作る前に
+/// 必ずパニックするので，この型の値はそもそも存在しない — 呼び出し側は feature の
+/// 有無を意識せずに `Option<PreparedLlm>` を組み立てられる．
 #[cfg(feature = "llm")]
-pub fn run_llm_with_meta(cfg: &Config) -> (SimulationResult, serde_json::Value) {
+pub struct PreparedLlm {
+    client: crate::llm::LiveClient,
+    identity: LlmIdentity,
+}
+
+/// 組み立て済みの LLM クライアント (feature `llm` 無効時: 中身を持たない)．
+#[cfg(not(feature = "llm"))]
+pub struct PreparedLlm(());
+
+/// LLM クライアントを組み，バックエンドの同一性だけ先に取り出す (feature `llm` 必須)．
+///
+/// `cfg.cache_path` を含む [`crate::llm::LlmSettings`] から永続キャッシュ付きの本番
+/// クライアント (Ollama 第一 → OpenAI フォールバック) を構築する．
+#[cfg(feature = "llm")]
+pub fn prepare_llm(cfg: &Config) -> PreparedLlm {
     let settings = crate::llm::settings_from_config(cfg);
     let client = crate::llm::build_live_client_from_settings(&settings)
         .unwrap_or_else(|e| panic!("LLM クライアント構築に失敗: {e}"));
-    crate::llm::run_llm_with_meta(cfg, client)
+    PreparedLlm::new(client, cfg.llm_temperature)
 }
 
-/// LLM 版 run のエントリ (feature `llm` 無効時: パニックする案内のみ)．
+/// LLM クライアントの組み立て (feature `llm` 無効時: パニックする案内のみ)．
 #[cfg(not(feature = "llm"))]
-pub fn run_llm_with_meta(_cfg: &Config) -> (SimulationResult, serde_json::Value) {
+pub fn prepare_llm(_cfg: &Config) -> PreparedLlm {
     panic!(
         "--decision-mode llm は `--features llm` でビルドした場合のみ利用できます \
          (cargo run --release --features llm -- ...)"
     );
+}
+
+#[cfg(feature = "llm")]
+impl PreparedLlm {
+    /// 任意のクライアント (本番 / mock) から組み立てる．
+    pub fn new(client: crate::llm::LiveClient, temperature: f32) -> Self {
+        let identity = crate::llm::identity_of(&client, temperature);
+        PreparedLlm { client, identity }
+    }
+
+    /// バックエンドの同一性．
+    pub fn identity(&self) -> &LlmIdentity {
+        &self.identity
+    }
+}
+
+#[cfg(not(feature = "llm"))]
+impl PreparedLlm {
+    /// バックエンドの同一性 ([`prepare_llm`] が先にパニックするので到達しない)．
+    pub fn identity(&self) -> &LlmIdentity {
+        unreachable!("feature `llm` 無効時に PreparedLlm は作られない")
+    }
+}
+
+/// 組み立て済みクライアントで LLM 版を駆動する (feature `llm` 必須)．
+#[cfg(feature = "llm")]
+pub fn run_prepared(cfg: &Config, prepared: PreparedLlm) -> (SimulationResult, LlmUsage) {
+    crate::llm::run_llm_with_usage(cfg, prepared.client)
+}
+
+/// 組み立て済みクライアントで LLM 版を駆動する (feature `llm` 無効時: 到達しない)．
+#[cfg(not(feature = "llm"))]
+pub fn run_prepared(_cfg: &Config, _prepared: PreparedLlm) -> (SimulationResult, LlmUsage) {
+    unreachable!("feature `llm` 無効時に PreparedLlm は作られない")
 }
 
 /// ルール版を実行し，**最終 tick の世界状態**を返す (陣営別指標の集計用)．
@@ -297,28 +373,17 @@ pub fn final_world(cfg: &Config) -> SpiralWorld {
     sim.world().clone()
 }
 
-/// 設定に応じて rule / llm のドライバを選び，`(結果, llm_meta JSON)` を返す．
-///
-/// rule モードは LLM 非呼び出しなので meta は `None`．LLM モードは
-/// [`run_llm_with_meta`] が `MetadataCollector` から集計した実 cache 統計
-/// (model / endpoint / temperature / seed / calls / cache_hits / cache_hit_rate)
-/// を `Some(json)` で返す — placeholder ではない実 `llm_meta.json` をここから書く．
-pub fn run_dispatch_with_meta(cfg: &Config) -> (SimulationResult, Option<serde_json::Value>) {
-    match cfg.decision_mode {
-        DecisionMode::Rule => (run(cfg), None),
-        DecisionMode::Llm => {
-            let (result, meta) = run_llm_with_meta(cfg);
-            (result, Some(meta))
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // 出力
 // ---------------------------------------------------------------------------
 
 /// 意見・表出履歴を long-format CSV に保存する: t, agent_id, b, e, pi_now, pi_fut．
+///
+/// 置き場は runvault の run ディレクトリの `artifacts/` 配下で，呼び出し側が渡す．
+/// `finish()` が `artifacts/` と `logs/` を歩いて `manifest.csv` を作るので，run が
+/// 終わった後にここへ足したものは記録に載らない．
 pub fn save_opinions(snapshots: &[Vec<(f64, i8, f64, f64)>], output_dir: &str) {
+    std::fs::create_dir_all(output_dir).expect("出力ディレクトリの作成に失敗");
     let path = format!("{}/opinions.csv", output_dir);
     let file = File::create(&path).expect("opinions.csv の作成に失敗");
     let mut wtr = Writer::from_writer(BufWriter::new(file));
@@ -338,25 +403,6 @@ pub fn save_opinions(snapshots: &[Vec<(f64, i8, f64, f64)>], output_dir: &str) {
         }
     }
     wtr.flush().expect("フラッシュに失敗");
-}
-
-/// メトリクス履歴を CSV に保存する (socsim_results::write_csv に委譲)．
-pub fn save_metrics(metrics: &[Metrics], output_dir: &str) {
-    let path = format!("{}/metrics.csv", output_dir);
-    socsim_results::write_csv(metrics, &path).expect("metrics.csv の書き込みに失敗");
-}
-
-/// 出力ディレクトリを作成する．
-pub fn ensure_output_dir(output_dir: &str) {
-    socsim_results::ensure_dir(output_dir).expect("出力ディレクトリの作成に失敗");
-}
-
-/// 任意の JSON 値をファイルへ書く薄ラッパ (llm_meta.json 等)．
-pub fn write_json_file(value: &serde_json::Value, path: &str) {
-    let file = File::create(path).expect("JSON ファイルの作成に失敗");
-    let mut w = BufWriter::new(file);
-    let s = serde_json::to_string_pretty(value).expect("JSON 直列化に失敗");
-    w.write_all(s.as_bytes()).expect("JSON 書き込みに失敗");
 }
 
 #[cfg(test)]

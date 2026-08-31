@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """visualize.py — Noelle-Neumann (1974) The Spiral of Silence 可視化スクリプト．
 
-results/latest (または --results-dir 指定先) の opinions.csv / metrics.csv を読み，
+runvault の run ディレクトリから意見の軌跡 (`artifacts/opinions.csv`) と
+メトリクス (`metrics.csv`) を読み，
 (1) 螺旋軌跡図 (公的言説支持率 q̂ と発言量・知覚-真値乖離の時系列)，
 (2) 陣営別 (多数派/少数派) の発言意欲 (列車テスト) 棒グラフ，
 を生成する．
 
+どの run を見るかは `--results-dir` を省略すれば runvault が答える
+(`runvault path --experiment noelleneumann --latest --subcommand run --standalone`)．
+`results/` を自分で走査して新しそうなディレクトリを当てにいくことはしない．
+
+図は run ディレクトリの *隣* (`results/noelleneumann/figures/<run_slug>/`) に置く．
+`manifest.csv` は `finish()` が確定させたもので，run が終わった後に足したものは
+そこに載らないためである．
+
 Usage:
-    noelleneumann-tools visualize
-    noelleneumann-tools visualize --results-dir results/20260530_000000
-    noelleneumann-tools visualize --output-dir out
+    uv run noelleneumann-tools visualize
+    uv run noelleneumann-tools visualize --results-dir "$(runvault path --experiment noelleneumann --latest --subcommand run --standalone)"
+    uv run noelleneumann-tools visualize --output-dir out
 
 Outputs:
     output_dir/
@@ -23,11 +32,15 @@ import argparse
 import os
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
-from socsim_tools.io import resolve_results_dir
+from runvault.read import artifacts_dir, figures_dir, metrics_wide, runvault_path
 
-plt.rcParams["font.family"] = "Hiragino Sans"
+EXPERIMENT = "noelleneumann"
+
+try:
+    plt.rcParams["font.family"] = "Hiragino Sans"
+except Exception:  # pragma: no cover - フォント未インストール環境用フォールバック
+    pass
 
 COLOR_BG = "#FAFAF8"
 COLOR_Q = "#534AB7"
@@ -37,14 +50,24 @@ COLOR_MAJ = "#534AB7"
 COLOR_MIN = "#C0392B"
 
 
-def _load(results_dir: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    opath = os.path.join(results_dir, "opinions.csv")
-    mpath = os.path.join(results_dir, "metrics.csv")
-    if not os.path.exists(opath):
-        raise FileNotFoundError(f"opinions.csv が見つかりません: {opath}")
-    if not os.path.exists(mpath):
-        raise FileNotFoundError(f"metrics.csv が見つかりません: {mpath}")
-    return pd.read_csv(opath), pd.read_csv(mpath)
+def load_opinions(path: str) -> pd.DataFrame:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"opinions.csv が見つかりません: {path}")
+    return pd.read_csv(path)
+
+
+def load_metrics(path: str) -> pd.DataFrame:
+    """ステップごとのメトリクスを 1 tick 1 行の表として読む．
+
+    runvault の `metrics.csv` は long 形式なので `metrics_wide` で横に倒す．時間軸の
+    列名は runvault では `step` だが，本モデルの表記は論文に合わせた `t` なので，
+    こちら側の呼び名に揃えてから返す (legacy の wide な metrics.csv はもともと `t` 列を
+    持つので何もしない)．
+    """
+    df = metrics_wide(path)
+    if "step" in df.columns and "t" not in df.columns:
+        df = df.rename(columns={"step": "t"})
+    return df
 
 
 def plot_spiral_trajectory(metrics: pd.DataFrame, out_path: str) -> None:
@@ -129,15 +152,41 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--results-dir", "--results_dir", default=None)
-    parser.add_argument("--output-dir", "--output_dir", default=None)
+    parser.add_argument(
+        "--results-dir", "--results_dir", default=None,
+        help=(
+            "runvault の run ディレクトリ．未指定時は runvault に最新の run を聞く "
+            "(--experiment noelleneumann --subcommand run --standalone)．"
+        ),
+    )
+    parser.add_argument(
+        "--results-root", "--results_root", default="results",
+        help="--results-dir 未指定時に runvault が探す results ルート (default: results)",
+    )
+    parser.add_argument(
+        "--output-dir", "--output_dir", default=None,
+        help="図の保存先 (default: results/noelleneumann/figures/{run_slug})",
+    )
     args = parser.parse_args(argv)
 
-    results_dir = str(resolve_results_dir(args.results_dir))
-    output_dir = args.output_dir or results_dir
+    run_dir = args.results_dir
+    if run_dir is None:
+        run_dir = runvault_path(
+            EXPERIMENT, args.results_root, subcommand="run", standalone=True
+        )
+
+    opinions_path = os.path.join(artifacts_dir(run_dir), "opinions.csv")
+    metrics_path = os.path.join(run_dir, "metrics.csv")
+    output_dir = args.output_dir or figures_dir(run_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    opinions, metrics = _load(results_dir)
+    print("=== 「沈黙の螺旋」 可視化 ===")
+    print(f"run:        {run_dir}")
+    print(f"出力先:     {output_dir}")
+    print("-----------------------------------------")
+
+    opinions = load_opinions(opinions_path)
+    metrics = load_metrics(metrics_path)
     p1 = os.path.join(output_dir, "spiral_trajectory.png")
     p2 = os.path.join(output_dir, "camp_voice.png")
     plot_spiral_trajectory(metrics, p1)
