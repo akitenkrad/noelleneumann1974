@@ -150,6 +150,14 @@ fn media_target_sign(cfg: &Config) -> f64 {
 
 /// ルールベース版でシミュレーションを実行する (LLM 非呼び出し)．
 pub fn run(cfg: &Config) -> SimulationResult {
+    run_observed(cfg, |_| {})
+}
+
+/// [`run`] と同じものを，1 tick ごとに `on_step` を呼びながら実行する．
+///
+/// ルール経路の費用は tick に乗っている (1 tick = n 人分のロジット + 近傍走査) ので，
+/// 進捗の 1 単位は 1 tick である．
+pub fn run_observed(cfg: &Config, on_step: impl FnMut(usize)) -> SimulationResult {
     let root = cfg.seed.unwrap_or_else(rand::random);
     let oracle = RuleOracle {
         beta_0: cfg.beta_0,
@@ -161,7 +169,7 @@ pub fn run(cfg: &Config) -> SimulationResult {
         alpha: cfg.alpha,
         alpha_a: cfg.alpha_a,
     };
-    run_with_oracle(cfg, root, oracle)
+    run_with_oracle_observed(cfg, root, oracle, on_step)
 }
 
 /// 任意の [`VoiceOracle`] でシミュレーションを駆動する共通ドライバ．
@@ -175,6 +183,19 @@ pub fn run_with_oracle<O: VoiceOracle + 'static>(
     cfg: &Config,
     root: u64,
     oracle: O,
+) -> SimulationResult {
+    run_with_oracle_observed(cfg, root, oracle, |_| {})
+}
+
+/// [`run_with_oracle`] と同じものを，1 tick ごとに `on_step` を呼びながら実行する．
+///
+/// 元の入口は no-op を渡す薄いラッパとして残してあるので，呼び出し側もテストも
+/// 振る舞いが変わらない．
+pub fn run_with_oracle_observed<O: VoiceOracle + 'static>(
+    cfg: &Config,
+    root: u64,
+    oracle: O,
+    mut on_step: impl FnMut(usize),
 ) -> SimulationResult {
     let world = init_world(cfg, root);
     let media_sign = media_target_sign(cfg);
@@ -224,6 +245,7 @@ pub fn run_with_oracle<O: VoiceOracle + 'static>(
         snapshots.push(snapshot(report.world));
         converged = report.stopped;
         final_tick = t;
+        on_step(t);
     })
     .expect("シミュレーションの実行に失敗");
 
@@ -324,12 +346,34 @@ impl PreparedLlm {
 /// 組み立て済みクライアントで LLM 版を駆動する (feature `llm` 必須)．
 #[cfg(feature = "llm")]
 pub fn run_prepared(cfg: &Config, prepared: PreparedLlm) -> (SimulationResult, LlmUsage) {
-    crate::llm::run_llm_with_usage(cfg, prepared.client)
+    run_prepared_observed(cfg, prepared, crate::mechanisms::no_observer())
 }
 
 /// 組み立て済みクライアントで LLM 版を駆動する (feature `llm` 無効時: 到達しない)．
 #[cfg(not(feature = "llm"))]
-pub fn run_prepared(_cfg: &Config, _prepared: PreparedLlm) -> (SimulationResult, LlmUsage) {
+pub fn run_prepared(cfg: &Config, prepared: PreparedLlm) -> (SimulationResult, LlmUsage) {
+    run_prepared_observed(cfg, prepared, crate::mechanisms::no_observer())
+}
+
+/// [`run_prepared`] と同じものを，発言決定 1 件ごとに `observer` を突きながら実行する．
+///
+/// LLM 経路の 1 呼び出しはここで数える — [`crate::mechanisms::VoiceObserver`] を参照．
+#[cfg(feature = "llm")]
+pub fn run_prepared_observed(
+    cfg: &Config,
+    prepared: PreparedLlm,
+    observer: crate::mechanisms::VoiceObserver,
+) -> (SimulationResult, LlmUsage) {
+    crate::llm::run_llm_with_usage_observed(cfg, prepared.client, observer)
+}
+
+/// [`run_prepared`] の観測版 (feature `llm` 無効時: 到達しない)．
+#[cfg(not(feature = "llm"))]
+pub fn run_prepared_observed(
+    _cfg: &Config,
+    _prepared: PreparedLlm,
+    _observer: crate::mechanisms::VoiceObserver,
+) -> (SimulationResult, LlmUsage) {
     unreachable!("feature `llm` 無効時に PreparedLlm は作られない")
 }
 
@@ -339,6 +383,11 @@ pub fn run_prepared(_cfg: &Config, _prepared: PreparedLlm) -> (SimulationResult,
 /// `voice_by_camp` / `pi_now_by_camp` / `hardcore_survival` を最終世界で測りたい
 /// 場合にこちらを使う．ドライバ本体と同一の配線・seed なので `run` と同一軌跡．
 pub fn final_world(cfg: &Config) -> SpiralWorld {
+    final_world_observed(cfg, |_| {})
+}
+
+/// [`final_world`] と同じものを，1 tick ごとに `on_step` を呼びながら実行する．
+pub fn final_world_observed(cfg: &Config, mut on_step: impl FnMut(usize)) -> SpiralWorld {
     let root = cfg.seed.unwrap_or_else(rand::random);
     let oracle = RuleOracle {
         beta_0: cfg.beta_0,
@@ -369,7 +418,8 @@ pub fn final_world(cfg: &Config) -> SpiralWorld {
         .add_mechanism(Box::new(PerAgentThresholdContagionMechanism::new()))
         .add_mechanism(Box::new(ClimateQuasiStatMechanism::new(cfg.window, 1e-3)))
         .build();
-    sim.run().expect("シミュレーションの実行に失敗");
+    sim.run_observed(|report| on_step(report.t as usize))
+        .expect("シミュレーションの実行に失敗");
     sim.world().clone()
 }
 

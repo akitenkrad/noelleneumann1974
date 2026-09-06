@@ -8,7 +8,7 @@
 //! 擬似決定論化する．
 //!
 //! LLM 層は socsim の bit 再現性の外側にある (プロンプト→応答キャッシュで擬似決定
-//! 論)．[`run_llm_with_usage`] が `simulation::run_with_oracle` に [`LlmOracle`] を
+//! 論)．[`run_llm_with_usage`] が `simulation::run_with_oracle_observed` に [`LlmOracle`] を
 //! 渡して駆動する．
 
 use std::cell::RefCell;
@@ -20,9 +20,9 @@ use socsim_llm::LlmClient;
 pub use socsim_llm::{llm_config, wrap_client, LiveClient, LlmSettings, MetadataCollector};
 
 use crate::config::Config;
-use crate::mechanisms::VoiceOracle;
+use crate::mechanisms::{no_observer, VoiceObserver, VoiceOracle};
 use crate::prompts;
-use crate::simulation::{run_with_oracle, LlmIdentity, LlmUsage, SimulationResult};
+use crate::simulation::{run_with_oracle_observed, LlmIdentity, LlmUsage, SimulationResult};
 use crate::world::SpiralWorld;
 
 /// LLM 内省でエージェントの発言確率を返すオラクル．
@@ -34,6 +34,7 @@ pub struct LlmOracle {
     metadata: Rc<RefCell<MetadataCollector>>,
     settings: LlmSettings,
     future_weight: f64,
+    observer: VoiceObserver,
 }
 
 impl LlmOracle {
@@ -43,17 +44,32 @@ impl LlmOracle {
         settings: LlmSettings,
         future_weight: f64,
     ) -> Self {
+        Self::with_observer(client, metadata, settings, future_weight, no_observer())
+    }
+
+    /// 発言決定 1 件ごとに突く観測子付きで組み立てる．
+    pub fn with_observer(
+        client: Rc<RefCell<LiveClient>>,
+        metadata: Rc<RefCell<MetadataCollector>>,
+        settings: LlmSettings,
+        future_weight: f64,
+        observer: VoiceObserver,
+    ) -> Self {
         LlmOracle {
             client,
             metadata,
             settings,
             future_weight,
+            observer,
         }
     }
 }
 
 impl VoiceOracle for LlmOracle {
     fn voice_prob(&mut self, world: &SpiralWorld, i: usize, _cascade_pressure: bool) -> f64 {
+        // 数えるのは «試みた決定» なので，応答が返る前に突く．失敗して中立へ倒れた
+        // 決定も 1 件は 1 件である．
+        (self.observer.borrow_mut())();
         let prompt = prompts::voice_introspection_prompt(
             world.b_priv[i],
             world.pi_now[i],
@@ -116,22 +132,36 @@ pub fn run_with_client(cfg: &Config, client: LiveClient) -> SimulationResult {
 /// model / endpoint / temperature は実行前に決まるので [`identity_of`] の担当で，
 /// ここが返すのは実行しないと分からない呼び出しの内訳だけである．
 pub fn run_llm_with_usage(cfg: &Config, client: LiveClient) -> (SimulationResult, LlmUsage) {
+    run_llm_with_usage_observed(cfg, client, no_observer())
+}
+
+/// [`run_llm_with_usage`] と同じものを，発言決定 1 件ごとに `observer` を突きながら
+/// 実行する．
+///
+/// 元の入口は no-op の観測子を渡す薄いラッパとして残してあるので，テストも例も
+/// 振る舞いが変わらない．
+pub fn run_llm_with_usage_observed(
+    cfg: &Config,
+    client: LiveClient,
+    observer: VoiceObserver,
+) -> (SimulationResult, LlmUsage) {
     let root = cfg.seed.unwrap_or_else(rand::random);
     let settings = settings_from_config(cfg);
     let shared_client = Rc::new(RefCell::new(client));
     let shared_meta = Rc::new(RefCell::new(MetadataCollector::new()));
-    let oracle = LlmOracle::new(
+    let oracle = LlmOracle::with_observer(
         Rc::clone(&shared_client),
         Rc::clone(&shared_meta),
         settings.clone(),
         cfg.alpha,
+        observer,
     );
-    let result = run_with_oracle(cfg, root, oracle);
+    let result = run_with_oracle_observed(cfg, root, oracle, |_| {});
 
     // 永続キャッシュは load-on-open / save-on-demand なので，run 後に明示的に
     // `.save()` しないとファイルが書かれず cold→warm 再生が成立しない．
     // `cache_path: None` (mock / in-memory) のときはスキップする．oracle は
-    // `run_with_oracle` の return で drop 済みのため素の borrow で衝突しない．
+    // `run_with_oracle_observed` の return で drop 済みのため素の borrow で衝突しない．
     if cfg.cache_path.is_some() {
         shared_client
             .borrow()

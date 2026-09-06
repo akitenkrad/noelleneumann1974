@@ -20,11 +20,32 @@
 //! | (`MetricsMechanism`) | Reward |
 //! | [`ClimateQuasiStatMechanism`] | PostStep |
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use rand::Rng;
 
 use socsim_core::{AgentId, Mechanism, Phase, Result, StepContext};
 
 use crate::world::{Expression, SpiralWorld};
+
+/// 発言決定 1 件ごとに突かれる観測子．
+///
+/// 費用が乗っているのは tick ではなく «エージェント 1 人の発言決定» である —
+/// `crate::llm::LlmOracle` は [`VoiceOracle::voice_prob`] のたびにモデルを 1 回
+/// 呼ぶので，n=1000 の 1 tick はそれだけで 1000 回の呼び出しになる．ローカルの
+/// llama3.2 で 1 呼び出し 1.53s を測っており，1 tick は 25 分である．tick を
+/// 数えていたら，その 25 分ずっと 0 のままになる．
+///
+/// 借用ではなく共有にするのは，オラクルがメカニズムごとエンジンへ
+/// `Box<dyn Mechanism<_>>` として入る (= `'static`) ため，呼び出し側の `Stage` を
+/// 借用できないからである．
+pub type VoiceObserver = Rc<RefCell<dyn FnMut()>>;
+
+/// 何も数えない観測子 (進捗を報告しない呼び出し側向け)．
+pub fn no_observer() -> VoiceObserver {
+    Rc::new(RefCell::new(|| {}))
+}
 
 /// ロジスティック関数 `logit^{-1}(x) = 1/(1+e^{-x})`．
 #[inline]

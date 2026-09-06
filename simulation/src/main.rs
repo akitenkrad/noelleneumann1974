@@ -9,20 +9,24 @@
 //! `latest` シンボリックリンクもこちらでは作らず，`Run::start` が決めた run
 //! ディレクトリへ書く．
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use clap::{Parser, Subcommand};
-use runvault::{Lineage, Run, RunOptions};
+use runvault::{Lineage, Run, RunOptions, Stage};
 use serde::Serialize;
 
 use noelleneumann_spiral_simulation::config::{
     parse_decision_mode, parse_network_model, Config, DecisionMode, RunParameters,
 };
+use noelleneumann_spiral_simulation::mechanisms::VoiceObserver;
 use noelleneumann_spiral_simulation::metrics::{pi_now_by_camp, voice_by_camp, Metrics};
 use noelleneumann_spiral_simulation::record::{
     self, Anchor, TrialOutcome, DOMAIN, EXPERIMENT, REPO_ID,
 };
 use noelleneumann_spiral_simulation::simulation::{
-    final_world, prepare_llm, run, run_prepared, save_opinions, LlmUsage, PreparedLlm,
-    SimulationResult,
+    final_world_observed, prepare_llm, run, run_observed, run_prepared_observed, save_opinions,
+    LlmUsage, PreparedLlm, SimulationResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -280,6 +284,35 @@ fn parse_usize_list(s: &str) -> Vec<usize> {
         .collect()
 }
 
+/// 発言決定を数える stage を，メカニズムの中から突ける形にして渡す．
+///
+/// 決定を数える場所は `LlmOracle::voice_prob` の中である．オラクルは
+/// `VoiceDecisionMechanism` ごとエンジンへ `Box<dyn Mechanism<_>>` として入るので
+/// `'static` であり，呼び出し側の `Stage` を借用できない — そこで `Rc` で共有し，
+/// 走り終えたあとに [`close_shared`] で取り出して閉じる．
+fn share_stage(stage: Stage) -> (Rc<RefCell<Option<Stage>>>, VoiceObserver) {
+    let cell = Rc::new(RefCell::new(Some(stage)));
+    let observer: VoiceObserver = {
+        let cell = Rc::clone(&cell);
+        Rc::new(RefCell::new(move || {
+            if let Some(stage) = cell.borrow_mut().as_mut() {
+                stage.tick();
+            }
+        }))
+    };
+    (cell, observer)
+}
+
+/// 共有していた stage を取り出して閉じる．
+///
+/// manifest.csv は `finish()` で封をされる．その後に 1 行足せば，manifest が
+/// 食い違うダイジェストを持つことになる．
+fn close_shared(cell: &Rc<RefCell<Option<Stage>>>) {
+    if let Some(stage) = cell.borrow_mut().take() {
+        stage.close();
+    }
+}
+
 /// 定常状態 (後半平均) のメトリクスを返す (t > T/2 の平均)．
 fn steady_state(result: &SimulationResult) -> Metrics {
     let hist = &result.metrics_history;
@@ -374,10 +407,30 @@ fn cmd_run(args: RunArgs) {
     println!("出力先: {}", rv.dir().display());
     println!("-------------------------------------------");
 
+    // 進捗の 1 単位は決定モードで変わる．
+    //
+    // - rule: 1 tick．LLM は一度も呼ばれず，費用は «n 人分のロジット + 近傍走査» に
+    //   あるので tick がそのまま仕事の粒度である．
+    // - llm : «エージェント 1 人の発言決定» = モデル呼び出し 1 回．
+    //   `VoiceDecisionMechanism` は毎 tick 全員に尋ねるので，既定の n=1000 では
+    //   1 tick がそれだけで 1000 回の呼び出しになる．ローカルの llama3.2 で
+    //   1 呼び出し 1.53s を測っており，1 tick は約 25 分である — tick を数えて
+    //   いたら，その 25 分ずっと 0 のままになる．
+    //
+    // どちらも分母を持たない．`ClimateQuasiStatMechanism` が見かけ支持率の安定を
+    // 5 tick 連続で見たところで `request_stop` するので，t_max は «到達しない上限»
+    // でしかなく，そこから作った残り時間は自信をもって間違う．
     let (result, usage): (SimulationResult, Option<LlmUsage>) = match prepared {
-        None => (run(&cfg), None),
+        None => {
+            let mut stage = rv.unbounded_stage("steps");
+            let result = run_observed(&cfg, |_| stage.tick());
+            stage.close();
+            (result, None)
+        }
         Some(p) => {
-            let (result, usage) = run_prepared(&cfg, p);
+            let (cell, observer) = share_stage(rv.unbounded_stage("decisions"));
+            let (result, usage) = run_prepared_observed(&cfg, p, observer);
+            close_shared(&cell);
             (result, Some(usage))
         }
     };
@@ -501,6 +554,15 @@ fn cmd_sweep(args: SweepArgs) {
 
     let mut done = 0usize;
 
+    // 進捗の 1 単位は «1 試行» (= 1 本のルール版シミュレーション)．既定の格子
+    // (5 η_m × 4 β × 4 α = 80 条件 × 30 試行 = 2400 試行, n=1000, t_max=80,
+    // 完全オフライン) を 257s で測っており，1 試行は 0.11s なので，試行より細かく
+    // 数える必要はない．
+    //
+    // 分母は持つ．試行の «長さ» は `ClimateQuasiStatMechanism` の早期停止で条件ごとに
+    // 変わるが，試行の «本数» は格子の積そのもので走る前から厳密に決まっている．
+    let mut stage = parent.stage("trials", n_total);
+
     for &eta_m in &eta_ms {
         for &network_beta in &betas {
             for &alpha in &alphas {
@@ -585,6 +647,7 @@ fn cmd_sweep(args: SweepArgs) {
                                 steady,
                             });
                             done += 1;
+                            stage.tick();
                         }
                         record::log_condition_summary(&mut child, &trials);
 
@@ -613,6 +676,9 @@ fn cmd_sweep(args: SweepArgs) {
             }
         }
     }
+
+    // manifest.csv は finish() で封をされるので，その前に閉じる．
+    stage.close();
 
     let dir = parent
         .finish()
@@ -666,7 +732,15 @@ fn cmd_reproduce(args: ReproduceArgs) {
     println!("=== 「沈黙の螺旋」 Table 1--5 アンカー再現 ===");
     println!("出力先: {}", rv.dir().display());
 
-    let result = run(&cfg);
+    // 3 本のシミュレーションを走らせるが，«3 のうち何本目» は仕事の粒度ではない —
+    // 1 本が n=1000 × t_max=80 の tick 群で，`--n` / `--t-max` で伸ばせる．そこで
+    // 1 本ごとに別の stage を開き，単位は run と同じ «1 tick» にする．stage を分けて
+    // あるのは，同じ stage を 3 度使い回すと数が 3 周ぶん積み上がって «いまどの
+    // シナリオか» が読めなくなるからである．分母を持たない理由は run と同じ
+    // (`ClimateQuasiStatMechanism` の早期停止)．
+    let mut stage = rv.unbounded_stage("baseline steps");
+    let result = run_observed(&cfg, |_| stage.tick());
+    stage.close();
     let ss = steady_state(&result);
     save_opinions(&result.snapshots, &cfg.output_dir);
     record::log_simulation(&mut rv, &result);
@@ -677,7 +751,9 @@ fn cmd_reproduce(args: ReproduceArgs) {
 
     // 陣営別 voice / pi は最終 tick の世界状態が必要なので，専用にもう一度実行して
     // world を取得する (ドライバ本体と同一の配線・seed なので軌跡は同一)．
-    let world = final_world(&cfg);
+    let mut stage = rv.unbounded_stage("camp-metrics steps");
+    let world = final_world_observed(&cfg, |_| stage.tick());
+    stage.close();
     let (maj_voice, min_voice) = voice_by_camp(&world);
     let (pi_pro, pi_con) = pi_now_by_camp(&world);
 
@@ -687,7 +763,9 @@ fn cmd_reproduce(args: ReproduceArgs) {
         hardcore_frac: BOUNDARY_HARDCORE_FRAC,
         ..cfg.clone()
     };
-    let world_hc = final_world(&cfg_hc);
+    let mut stage = rv.unbounded_stage("boundary steps");
+    let world_hc = final_world_observed(&cfg_hc, |_| stage.tick());
+    stage.close();
     let hc_survival = noelleneumann_spiral_simulation::metrics::hardcore_survival(&world_hc);
 
     // 帯はどれも本再現が置いたもので，論文の報告値ではない (論文値は
