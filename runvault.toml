@@ -1,0 +1,234 @@
+# 指標が何を測っているか (runvault の宣言．rs-runvault docs/metrics.ja.md)．
+#
+# 名前は `simulation/src/record.rs` と `simulation/src/metrics.rs` が書いているものと
+# 一致していなければならない．
+#
+# 帯照合 (`Anchor`) の指標名にはどれも接頭辞が付く — `steady_` は定常状態の後半平均，
+# `final_` は最終 tick の世界状態，`boundary_` はハードコア境界シナリオである．
+# 接頭辞なしの同名はステップごとの指標が使っているので，両者は別の量である．
+#
+# `direction` は «どちらが良いか»．沈黙の螺旋の各量は模型の記述であって成績ではない
+# ので `none` を書く — 発言量が多いほど良い，という話ではない．例外は `anchors_passed`
+# / `convergence_rate` / `llm_cache_hit_rate` で，これらは再現と実行の側の尺度である．
+
+# --- ステップごと (scope=run, step=t) -------------------------------------
+
+[metrics."voice_volume"]
+meaning   = "発言量．沈黙していないエージェントの割合 (論文 Table 1 の 36%)"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."majority_voice_ratio"]
+meaning   = "多数派と少数派の発言意欲の対数オッズ比．正なら多数派の方が発言意欲が高い (沈黙の螺旋)．符号ではなく多数派/少数派の役割で定義してあるので，どちらの側が優勢でも同じ向きに出る"
+unit      = "log_odds_ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."perceived_minus_actual"]
+meaning   = "見かけの支持率と真の支持率の差 (q̂ − q)．螺旋が生む世論の誤認そのもの"
+unit      = "ratio"
+direction = "none"
+range     = [-1.0, 1.0]
+scope     = ["run"]
+
+[metrics."future_assessment_gap"]
+meaning   = "未来評価ギャップ．多数派の平均未来知覚多数度から少数派のそれを引いた値．多数派が楽観し少数派が悲観するほど大きい"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."hardcore_survival"]
+meaning   = "少数派のハードコア (劣勢側かつ低閾値) のうち，なお自陣営として発言している割合．ハードコアが 1 体もいなければ少数派全体の発言比に退避する"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."apparent_support"]
+meaning   = "公的言説から見える支持率 q̂"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."opinion_clusters"]
+meaning   = "公的表出の占有クラス数 (符号 {-1,0,1} 上)．単峰化の度合い"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."expression_entropy"]
+meaning   = "公的表出の符号のシャノンエントロピー (3 カテゴリ)．発言の多様性"
+unit      = "bits"
+direction = "none"
+scope     = ["run"]
+
+# --- 試行 1 本ぶん (scope=run) ---------------------------------------------
+
+[metrics."converged"]
+meaning   = "収束して終わったなら 1，打ち切りなら 0"
+unit      = "boolean"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."final_tick"]
+meaning   = "停止したときの tick 数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+# --- LLM の呼び出し (scope=run) --------------------------------------------
+
+[metrics."llm_calls"]
+meaning   = "この run が行った LLM の呼び出し回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hits"]
+meaning   = "そのうちキャッシュで済んだ回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hit_rate"]
+meaning   = "キャッシュで済んだ割合．高いほど同じ条件の再実行が安く済む"
+unit      = "ratio"
+direction = "up"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+# --- 条件ごとの集計 (試行群の平均．scope=run) -------------------------------
+
+[metrics."n_converged"]
+meaning   = "この条件の試行のうち収束したものの本数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."convergence_rate"]
+meaning   = "この条件の試行のうち収束したものの割合"
+unit      = "ratio"
+direction = "up"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_voice_volume"]
+meaning   = "試行群にわたる，定常状態の発言量の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_majority_voice_ratio"]
+meaning   = "試行群にわたる，定常状態の発言意欲対数オッズ比の平均"
+unit      = "log_odds_ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_perceived_minus_actual"]
+meaning   = "試行群にわたる，定常状態の世論誤認 (q̂ − q) の平均"
+unit      = "ratio"
+direction = "none"
+range     = [-1.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_future_assessment_gap"]
+meaning   = "試行群にわたる，定常状態の未来評価ギャップの平均"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_hardcore_survival"]
+meaning   = "試行群にわたる，定常状態のハードコア継続発言比の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_apparent_support"]
+meaning   = "試行群にわたる，定常状態の見かけ支持率の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_final_tick"]
+meaning   = "試行群にわたる，停止までの tick 数の平均"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+# --- 帯照合の観測量 (scope=run) --------------------------------------------
+#
+# 帯そのもの (下限・上限) と PASS / off の判定は数ではないので `events.jsonl` に，
+# 論文の報告値は `reference.csv` に書く．ここにあるのは観測量だけである．
+
+[metrics."steady_voice_volume"]
+meaning   = "定常状態 (後半平均) の発言量．帯照合の観測量"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."steady_majority_voice_ratio"]
+meaning   = "定常状態の発言意欲対数オッズ比．帯照合の観測量"
+unit      = "log_odds_ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."steady_future_assessment_gap"]
+meaning   = "定常状態の未来評価ギャップ．帯照合の観測量"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."final_majority_voice"]
+meaning   = "最終 tick における多数派の発言比．帯照合の観測量"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."final_minority_voice"]
+meaning   = "最終 tick における少数派の発言比．帯照合の観測量"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."final_pi_now_pro"]
+meaning   = "最終 tick における賛成派の現在知覚多数度の平均．帯照合の観測量"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."final_pi_now_con"]
+meaning   = "最終 tick における反対派の現在知覚多数度の平均．帯照合の観測量"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."boundary_hardcore_survival"]
+meaning   = "ハードコア境界シナリオでのハードコア継続発言比．帯照合の観測量"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."anchors_passed"]
+meaning   = "帯に収まった観測量の数．帯は本再現が置いたもので，論文の報告値ではない (論文値は reference.csv)"
+unit      = "count"
+direction = "up"
+scope     = ["run"]
+
+[metrics."anchors_total"]
+meaning   = "照合した帯の総数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
