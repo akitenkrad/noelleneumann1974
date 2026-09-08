@@ -232,3 +232,106 @@ meaning   = "照合した帯の総数"
 unit      = "count"
 direction = "none"
 scope     = ["run"]
+
+# --- 条件（parameters）の説明 -----------------------------------------------
+#
+# 鍵は JSON ポインタ．`config.json` の `/parameters` からの相対で指す．
+# ロジットの係数も条件として記録している（再現のため）．
+
+[parameters."/n"]
+meaning = "エージェント数 n"
+unit    = "count"
+
+[parameters."/true_support"]
+meaning = "真の賛成支持率 q = #{b_i>0}/n．初期の私的意見の分布を決める"
+range   = [0.0, 1.0]
+
+[parameters."/network_model"]
+meaning = "網の生成モデル．`watts-strogatz`（既定）/ `erdos-renyi` / `barabasi-albert`"
+
+[parameters."/network_k"]
+meaning = "平均次数 k（WS）．BA では m，ER では期待次数として p に換算される"
+unit    = "count"
+
+[parameters."/network_beta"]
+meaning = "Watts–Strogatz の再配線率 β"
+range   = [0.0, 1.0]
+
+[parameters."/eta_m"]
+meaning = "媒体の均質性 η_m．大きいほど媒体が一方向に偏る"
+range   = [0.0, 1.0]
+
+[parameters."/alpha"]
+meaning = "未来重み α（H5）．発言判断が «いまの気候» より «未来の気候» をどれだけ見るか"
+range   = [0.5, 1.0]
+
+[parameters."/alpha_a"]
+meaning = "匿名係数 α_a．高いほど匿名性が恐怖を縮減する"
+range   = [0.0, 1.0]
+
+[parameters."/hardcore_frac"]
+meaning = "ハードコアと見なす下裾の閾値割合．螺旋に抗して発言し続ける少数派の比率"
+range   = [0.0, 1.0]
+
+[parameters."/beta_0"]
+meaning = "発言ロジットの切片 β_0"
+
+[parameters."/beta_b"]
+meaning = "発言ロジットの私的意見係数 β_b"
+
+[parameters."/beta_u"]
+meaning = "発言ロジットの媒体係数 β_u"
+
+[parameters."/beta_pi"]
+meaning = "発言ロジットの気候係数 β_π"
+
+[parameters."/beta_fear"]
+meaning = "発言ロジットの恐怖係数 β_f"
+
+[parameters."/beta_theta"]
+meaning = "発言ロジットのカスケード閾値ボーナス係数 β_θ"
+
+[parameters."/lambda"]
+meaning = "気候の更新の学習率 λ（沈黙の螺旋の速さを決める）"
+
+[parameters."/gamma"]
+meaning = "未来の気候を外挿する係数 γ"
+
+[parameters."/window"]
+meaning = "未来を外挿するときに見る窓幅 W"
+unit    = "count"
+
+[parameters."/t_max"]
+meaning = "tick 数の上限 T"
+unit    = "count"
+
+[parameters."/decision_mode"]
+meaning = "発言を決める仕組み．`rule` はロジスティック（LLM を呼ばない），`llm` は LLM に内省させる（Phase 3）"
+
+[parameters."/seed"]
+meaning = "試行のシードを派生させる基準の乱数種"
+
+# --- sweep 親のグリッド定義 --------------------------------------------------
+
+[parameters."/runs"]
+meaning = "この条件で走らせる独立試行の本数"
+unit    = "count"
+
+[parameters."/alpha_values"]
+meaning = "sweep が比べる未来重み α の並び"
+
+[parameters."/eta_m_values"]
+meaning = "sweep が比べる媒体均質性 η_m の並び"
+
+[parameters."/network_k_values"]
+meaning = "sweep が比べる平均次数 k の並び"
+
+[parameters."/network_beta_values"]
+meaning = "sweep が比べる再配線率 β の並び"
+
+[parameters."/true_support_values"]
+meaning = "sweep が比べる真の支持率 q の並び"
+
+[parameters."/boundary_hardcore_frac"]
+meaning = "ハードコア境界シナリオでのハードコア比率．帯照合の boundary_ 系はこの条件で測る"
+range   = [0.0, 1.0]
