@@ -862,7 +862,7 @@ dependencies = [
 [[package]]
 name = "runvault"
 version = "0.1.0"
-source = "git+https://github.com/akitenkrad/rs-runvault?branch=main#16c6086f57c4c80541c081d1b46413401d163922"
+source = "git+https://github.com/akitenkrad/rs-runvault?branch=main#11f0a440daf7e6a2e3eb1f23ecb7fd5529ebdcf0"
 dependencies = [
  "blake3",
  "chrono",
