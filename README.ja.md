@@ -39,6 +39,11 @@ OLLAMA_MODEL=llama3.1 cargo run --release --features llm -- run --decision-mode 
 
 プロンプト→応答キャッシュは `--cache-path` に永続化されるため，同一引数の温暖な再実行はモデルを再呼び出しせずディスクから再生される (100% cache-hit)．詳細は [CLI](docs/cli.md) を参照．
 
+
+## Scratch run
+
+開発中・デバッグ中・動作確認の実行には `--scratch` を付ける．run は `results/_scratch/` に作られ，同期されない．最新の scratch run は `runvault path --scratch` で取得できる．
+
 ## ドキュメント
 
 - [ユースケース](docs/usecases.ja.md) — 本プロジェクトでできること，他ドキュメントへの導線．

@@ -41,6 +41,9 @@ use noelleneumann_spiral_simulation::simulation::{
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+    /// Development run: write it under results/_scratch/ so it is never synced to the vault.
+    #[arg(long, global = true)]
+    scratch: bool,
     /// Ollama 接続先 URL（指定時は環境変数 OLLAMA_HOST を上書きする）．
     #[arg(long, global = true)]
     ollama_host: Option<String>,
@@ -351,7 +354,7 @@ fn ensure_cache_parent(cfg: &Config) {
 // run
 // ---------------------------------------------------------------------------
 
-fn cmd_run(args: RunArgs) {
+fn cmd_run(args: RunArgs, scratch: bool) {
     // シードを実体化してから記録する．--seed 省略時にシミュレーション側で
     // rand::random に落とすと，実際に使われたシードがどこにも残らない．
     let seed = args.seed.unwrap_or_else(rand::random::<u64>);
@@ -367,6 +370,7 @@ fn cmd_run(args: RunArgs) {
 
     let parameters = cfg.to_parameters(seed);
     let mut options = RunOptions::new(EXPERIMENT, "run")
+        .scratch(scratch)
         .repo_id(REPO_ID)
         .domain(DOMAIN)
         .results_root(&args.output_dir)
@@ -490,7 +494,7 @@ fn cmd_run(args: RunArgs) {
 // sweep
 // ---------------------------------------------------------------------------
 
-fn cmd_sweep(args: SweepArgs) {
+fn cmd_sweep(args: SweepArgs, scratch: bool) {
     let eta_ms = parse_f64_list(&args.eta_m_values);
     let betas = parse_f64_list(&args.network_beta_values);
     let alphas = parse_f64_list(&args.alpha_values);
@@ -519,6 +523,7 @@ fn cmd_sweep(args: SweepArgs) {
     // sweep_id は runvault が親の run_slug で埋める．
     let parent = Run::start(
         RunOptions::new(EXPERIMENT, "sweep")
+            .scratch(scratch)
             .repo_id(REPO_ID)
             .domain(DOMAIN)
             .results_root(&args.output_dir)
@@ -586,6 +591,7 @@ fn cmd_sweep(args: SweepArgs) {
                         // 別物になる．同じ条件の繰り返しは無いので replicate_index は 0．
                         let mut child = Run::start(
                             RunOptions::new(EXPERIMENT, "sweep-point")
+                                .scratch(scratch)
                                 .repo_id(REPO_ID)
                                 .domain(DOMAIN)
                                 .results_root(&args.output_dir)
@@ -696,7 +702,7 @@ fn cmd_sweep(args: SweepArgs) {
 /// ハードコア境界シナリオの hardcore 比率 (baseline は 0.05)．
 const BOUNDARY_HARDCORE_FRAC: f64 = 0.25;
 
-fn cmd_reproduce(args: ReproduceArgs) {
+fn cmd_reproduce(args: ReproduceArgs, scratch: bool) {
     // 社会主義到来シナリオ (q=0.37): 勝/負陣営の発言意欲非対称 (Table 2)．
     let mut cfg = Config {
         n: args.n,
@@ -716,6 +722,7 @@ fn cmd_reproduce(args: ReproduceArgs) {
     };
     let mut rv = Run::start(
         RunOptions::new(EXPERIMENT, "reproduce")
+            .scratch(scratch)
             .repo_id(REPO_ID)
             .domain(DOMAIN)
             .results_root(&args.output_dir)
@@ -819,12 +826,13 @@ fn cmd_reproduce(args: ReproduceArgs) {
 
 fn main() {
     let cli = Cli::parse();
+    let scratch = cli.scratch;
     if let Some(host) = cli.ollama_host.as_deref() {
         std::env::set_var("OLLAMA_HOST", host);
     }
     match cli.command {
-        Commands::Run(args) => cmd_run(args),
-        Commands::Sweep(args) => cmd_sweep(args),
-        Commands::Reproduce(args) => cmd_reproduce(args),
+        Commands::Run(args) => cmd_run(args, scratch),
+        Commands::Sweep(args) => cmd_sweep(args, scratch),
+        Commands::Reproduce(args) => cmd_reproduce(args, scratch),
     }
 }

@@ -39,6 +39,11 @@ OLLAMA_MODEL=llama3.1 cargo run --release --features llm -- run --decision-mode 
 
 The prompt→response cache is persisted to `--cache-path`, so an identical warm rerun replays from disk (100% cache-hit) instead of re-calling the model; see [CLI](docs/cli.md).
 
+
+## Scratch runs
+
+Use `--scratch` for development, debugging, and smoke-test runs. Scratch runs are created under `results/_scratch/`, are never synced to the vault, and the latest scratch run can be located with `runvault path --scratch`.
+
 ## Documentation
 
 - [Use cases](docs/usecases.md) — what you can do with this project, with pointers to the rest of the docs.
